@@ -944,7 +944,7 @@ parseqatom(struct vars * v,
 			EMPTYARC(lp, s);
 			EMPTYARC(s2, rp);
 			NOERR();
-			atom = parse(v, ')', PLAIN, s, s2);
+			atom = parse(v, ')', type, s, s2);
 			assert(SEE(')') || ISERR());
 			NEXT();
 			NOERR();
@@ -1586,6 +1586,7 @@ dovec(struct vars * v,
 	{
 		ch = *p;
 		newarc(v->nfa, PLAIN, subcolor(v->cm, ch), lp, rp);
+		NOERR();
 	}
 
 	/* and the ranges */
@@ -1595,6 +1596,7 @@ dovec(struct vars * v,
 		to = *(p + 1);
 		if (from <= to)
 			subrange(v, from, to, lp, rp);
+		NOERR();
 	}
 }
 

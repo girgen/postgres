@@ -1013,7 +1013,9 @@ pg_SSPI_error(int severity, const char *errmsg, SECURITY_STATUS r)
 {
 	char		sysmsg[256];
 
-	if (FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, r, 0,
+	if (FormatMessage(FORMAT_MESSAGE_IGNORE_INSERTS |
+					  FORMAT_MESSAGE_FROM_SYSTEM,
+					  NULL, r, 0,
 					  sysmsg, sizeof(sysmsg), NULL) == 0)
 		ereport(severity,
 				(errmsg_internal("%s", errmsg),
@@ -1254,6 +1256,8 @@ pg_SSPI_recvauth(Port *port)
 		ereport(ERROR,
 				(errmsg_internal("could not get user token: error code %lu",
 								 GetLastError())));
+
+	CloseHandle(token);
 
 	if (!LookupAccountSid(NULL, tokenuser->User.Sid, accountname, &accountnamesize,
 						  domainname, &domainnamesize, &accountnameuse))
