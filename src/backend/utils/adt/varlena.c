@@ -35,6 +35,14 @@
 #include "utils/pg_locale.h"
 #include "utils/sortsupport.h"
 
+#ifdef USE_ICU
+#include <unicode/utypes.h>   /* Basic ICU data types */
+#include <unicode/ucnv.h>     /* C   Converter API    */
+#include <unicode/ucol.h>
+#include <unicode/uloc.h>
+#include "unicode/uiter.h"
+#endif /* USE_ICU */
+
 
 /* GUC variable */
 int			bytea_output = BYTEA_OUTPUT_HEX;
@@ -82,6 +90,9 @@ typedef struct
  * that we feel comfortable putting it on the stack
  */
 #define TEXTBUFLEN		1024
+#ifdef USE_ICU
+#define UTEXTBUFLEN		TEXTBUFLEN / sizeof(UChar)
+#endif /* USE_ICU */
 
 #define DatumGetUnknownP(X)			((unknown *) PG_DETOAST_DATUM(X))
 #define DatumGetUnknownPCopy(X)		((unknown *) PG_DETOAST_DATUM_COPY(X))
@@ -1400,6 +1411,136 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 	{
 		char		a1buf[TEXTBUFLEN];
 		char		a2buf[TEXTBUFLEN];
+
+
+#ifdef USE_ICU
+
+		if (pg_database_encoding_max_length() > 1)
+		{
+			static UCollator * collator = NULL;
+			UErrorCode  status = U_ZERO_ERROR;
+
+			/* We keep a static collator "forever", since it is hard
+			 * coded into the database cluster at initdb time
+			 * anyway. Create it first time we get here. */
+			if (collator == NULL)
+			{
+				/* Expect LC_COLLATE to be set to something that ICU
+				 * will understand. This is quite probable, since ICU
+				 * does a lot of heuristics with this argument. I'd
+				 * rather set this in xlog.c, but it seems ICU forgets
+				 * it??? */
+				uloc_setDefault(setlocale(LC_COLLATE, NULL), &status);
+				if(U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not set default lc_collate")));
+				}
+				collator = ucol_open(NULL, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not open collator")));
+				}
+			}
+
+			if (GetDatabaseEncoding() == PG_UTF8)
+			{
+				UCharIterator sIter, tIter;
+				uiter_setUTF8(&sIter, arg1, len1);
+				uiter_setUTF8(&tIter, arg2, len2);
+				result = ucol_strcollIter(collator, &sIter, &tIter, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not collate")));
+				}
+			}
+			else {
+				/* We keep a static converter "forever".
+				 * Create it first time we get here. */
+				static UConverter * conv = NULL;
+				if (conv == NULL)
+				{
+					conv = ucnv_open(NULL, &status);
+					if (U_FAILURE(status) || conv == NULL)
+					{
+						ereport(ERROR,
+								(errcode(status),
+								 errmsg("ICU error: varlena.c, could not get converter for \"%s\"", ucnv_getDefaultName())));
+					}
+				}
+
+				UChar	a1buf[UTEXTBUFLEN],
+						a2buf[UTEXTBUFLEN];
+				int		a1len = UTEXTBUFLEN,
+						a2len = UTEXTBUFLEN;
+				UChar	*a1p,
+						*a2p;
+				if (len1 >= UTEXTBUFLEN / sizeof(UChar))
+				{
+					a1len = (len1 + 1) * sizeof(UChar);
+					a1p = (UChar *) palloc(a1len);
+				}
+				else
+					a1p = a1buf;
+
+				if (len2 >= UTEXTBUFLEN / sizeof(UChar))
+				{
+					a2len = (len2 + 1) * sizeof(UChar);
+					a2p = (UChar *) palloc(a2len);
+				}
+				else
+					a2p = a2buf;
+
+				ucnv_toUChars(conv, a1p, a1len, arg1, len1, &status);
+				if(U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not convert to UChars")));
+				}
+				ucnv_toUChars(conv, a2p, a2len, arg2, len2, &status);
+				if(U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not convert to UChars")));
+				}
+
+				result = ucol_strcoll(collator, a1p, -1, a2p, -1);
+				if(U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not collate")));
+				}
+				if (len1 * sizeof(UChar) >= UTEXTBUFLEN)
+					pfree(a1p);
+				if (len2 * sizeof(UChar) >= UTEXTBUFLEN)
+					pfree(a2p);
+			}
+			/*
+			 * In some locales wcscoll() can claim that nonidentical strings
+			 * are equal.  Believing that this might be so also for ICU, and
+			 * believing that would be bad news for a number of
+			 * reasons, we follow Perl's lead and sort "equal" strings
+			 * according to strcmp (on the byte representation).
+			 */
+			if (result == 0)
+			{
+				result = strncmp(arg1, arg2, Min(len1, len2));
+				if ((result == 0) && (len1 != len2))
+					result = (len1 < len2) ? -1 : 1;
+			}
+
+			return result;
+		}
+#endif /* USE_ICU */
+
 		char	   *a1p,
 				   *a2p;
 

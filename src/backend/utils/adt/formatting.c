@@ -92,6 +92,12 @@
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
 
+#ifdef USE_ICU
+#define U_CHARSET_IS_UTF8 1
+#include <unicode/uchar.h>
+#include <unicode/ucasemap.h>
+#endif /* USE_ICU */
+
 /* ----------
  * Routines type
  * ----------
@@ -940,6 +946,11 @@ typedef struct NUMProc
 } NUMProc;
 
 
+#ifdef USE_ICU
+static UCaseMap *casemap = NULL;
+#endif   /* USE_ICU */
+
+
 /* ----------
  * Functions
  * ----------
@@ -1491,6 +1502,48 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 	{
 		result = asc_tolower(buff, nbytes);
 	}
+#ifdef USE_ICU
+	/* use ICU only when max encoding length > one */
+	if (pg_database_encoding_max_length() > 1)
+	{
+		uint32_t	buflen;
+		UErrorCode	status = U_ZERO_ERROR;
+
+		if (casemap == NULL)
+		{
+			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+						(errcode(status),
+						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+			}
+		}
+
+		result = palloc(nbytes + 1); // add a byte for null termination
+
+		/* run desired function */
+		buflen = ucasemap_utf8ToLower(casemap, result, nbytes + 1, buff, nbytes, &status);
+
+		/*
+		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+		 * Accept that we run the transcription twice in these rare cases rather than wasting
+		 * memory or clock cycles trying to figure out the correct size.
+		*/
+		if (buflen > nbytes) {
+			pfree(result);
+			result = palloc(buflen + 1);
+			status = U_ZERO_ERROR;
+			buflen = ucasemap_utf8ToLower(casemap, result, buflen + 1, buff, nbytes, &status);
+		}
+		if (U_FAILURE(status))
+		{
+			ereport(ERROR,
+						(errcode(status),
+						 errmsg("ICU error: Could not modify case")));
+		}
+	}
+#else
 #ifdef USE_WIDE_UPPER_LOWER
 	else if (pg_database_encoding_max_length() > 1)
 	{
@@ -1544,6 +1597,7 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 		pfree(workspace);
 	}
 #endif   /* USE_WIDE_UPPER_LOWER */
+#endif   /* USE_ICU */
 	else
 	{
 #ifdef HAVE_LOCALE_T
@@ -1611,6 +1665,48 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 	{
 		result = asc_toupper(buff, nbytes);
 	}
+#ifdef USE_ICU
+	/* use ICU only when max encoding length > one */
+	if (pg_database_encoding_max_length() > 1)
+	{
+		uint32_t	buflen;
+		UErrorCode	status = U_ZERO_ERROR;
+
+		if (casemap == NULL)
+		{
+			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+						(errcode(status),
+						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+			}
+		}
+
+		result = palloc(nbytes + 1); // add a byte for null termination
+
+		/* run desired function */
+		buflen = ucasemap_utf8ToUpper(casemap, result, nbytes + 1, buff, nbytes, &status);
+
+		/*
+		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+		 * Accept that we run the transcription twice in these rare cases rather than wasting
+		 * memory or clock cycles trying to figure out the correct size.
+		*/
+		if (buflen > nbytes) {
+			pfree(result);
+			result = palloc(buflen + 1);
+			status = U_ZERO_ERROR;
+			buflen = ucasemap_utf8ToUpper(casemap, result + 1, buflen, buff, nbytes, &status);
+		}
+		if (U_FAILURE(status))
+		{
+			ereport(ERROR,
+						(errcode(status),
+						 errmsg("ICU error: Could not modify case")));
+		}
+	}
+#else
 #ifdef USE_WIDE_UPPER_LOWER
 	else if (pg_database_encoding_max_length() > 1)
 	{
@@ -1664,6 +1760,7 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 		pfree(workspace);
 	}
 #endif   /* USE_WIDE_UPPER_LOWER */
+#endif   /* USE_ICU */
 	else
 	{
 #ifdef HAVE_LOCALE_T
@@ -1732,6 +1829,48 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 	{
 		result = asc_initcap(buff, nbytes);
 	}
+#ifdef USE_ICU
+	/* use ICU only when max encoding length > one */
+	if (pg_database_encoding_max_length() > 1)
+	{
+		uint32_t	buflen;
+		UErrorCode	status = U_ZERO_ERROR;
+
+		if (casemap == NULL)
+		{
+			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+						(errcode(status),
+						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+			}
+		}
+
+		result = palloc(nbytes + 1); // add a byte for null termination
+
+		/* run desired function */
+		buflen = ucasemap_utf8ToTitle(casemap, result, nbytes + 1, buff, nbytes, &status);
+
+		/*
+		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+		 * Accept that we run the transcription twice in these rare cases rather than wasting
+		 * memory or clock cycles trying to figure out the correct size.
+		*/
+		if (buflen > nbytes) {
+			pfree(result);
+			result = palloc(buflen + 1);
+			status = U_ZERO_ERROR;
+			buflen = ucasemap_utf8ToTitle(casemap, result, buflen + 1, buff, nbytes, &status);
+		}
+		if (U_FAILURE(status))
+		{
+			ereport(ERROR,
+						(errcode(status),
+						 errmsg("ICU error: Could not modify case")));
+		}
+	}
+#else
 #ifdef USE_WIDE_UPPER_LOWER
 	else if (pg_database_encoding_max_length() > 1)
 	{
@@ -1797,6 +1936,7 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 		pfree(workspace);
 	}
 #endif   /* USE_WIDE_UPPER_LOWER */
+#endif   /* USE_ICU */
 	else
 	{
 #ifdef HAVE_LOCALE_T
