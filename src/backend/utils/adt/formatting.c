@@ -1527,10 +1527,14 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 
 		result = palloc(nbytes + 1); // add a byte for null termination
 
-		// run desired function
+		/* run desired function */
 		buflen = ucasemap_utf8ToLower(casemap, result, nbytes + 1, buff, nbytes, &status);
 
-		// In some corner cases like Turkic `I', resulting char* can be longer than source
+		/*
+		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+		 * Accept that we run the transcription twice in these rare cases rather than wasting
+		 * memory or clock cycles trying to figure out the correct size.
+		*/
 		if (buflen > nbytes) {
 			pfree(result);
 			result = palloc(buflen + 1);
@@ -1686,10 +1690,14 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 
 		result = palloc(nbytes + 1); // add a byte for null termination
 
-		// run desired function
+		/* run desired function */
 		buflen = ucasemap_utf8ToUpper(casemap, result, nbytes + 1, buff, nbytes, &status);
 
-		// In some corner cases like Turkic `I', resulting char* can be longer than source
+		/*
+		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+		 * Accept that we run the transcription twice in these rare cases rather than wasting
+		 * memory or clock cycles trying to figure out the correct size.
+		*/
 		if (buflen > nbytes) {
 			pfree(result);
 			result = palloc(buflen + 1);
@@ -1846,10 +1854,14 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 
 		result = palloc(nbytes + 1); // add a byte for null termination
 
-		// run desired function
+		/* run desired function */
 		buflen = ucasemap_utf8ToTitle(casemap, result, nbytes + 1, buff, nbytes, &status);
 
-		// In some corner cases like Turkic `I', resulting char* can be longer than source
+		/*
+		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+		 * Accept that we run the transcription twice in these rare cases rather than wasting
+		 * memory or clock cycles trying to figure out the correct size.
+		*/
 		if (buflen > nbytes) {
 			pfree(result);
 			result = palloc(buflen + 1);
