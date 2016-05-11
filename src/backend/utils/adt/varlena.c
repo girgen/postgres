@@ -1459,7 +1459,8 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 							 errmsg("ICU Error: varlena.c, could not collate")));
 				}
 			}
-			else {
+			else
+			{
 				/* We keep a static converter "forever".
 				 * Create it first time we get here. */
 				static UConverter * conv = NULL;
