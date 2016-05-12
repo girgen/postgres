@@ -96,6 +96,9 @@
 #define U_CHARSET_IS_UTF8 1
 #include <unicode/uchar.h>
 #include <unicode/ucasemap.h>
+#include <unicode/utypes.h>   /* Basic ICU data types */
+#include <unicode/ucnv.h>     /* C   Converter API    */
+#include <unicode/ustring.h>
 #endif /* USE_ICU */
 
 /* ----------
@@ -952,7 +955,9 @@ typedef struct NUMProc
 
 
 #ifdef USE_ICU
-static UCaseMap *casemap = NULL;
+static UConverter *conv = NULL;  /* used for multibyte non-UTF-8 charsets only */
+static UCaseMap *casemap = NULL; /* used for UTF-8 transcriptions */
+#define UTEXTBUFLEN            1024 / sizeof(UChar)
 #endif   /* USE_ICU */
 
 
@@ -1513,41 +1518,123 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 	/* use ICU only when max encoding length > one */
 	if (pg_database_encoding_max_length() > 1)
 	{
-		uint32_t	buflen;
-		UErrorCode	status = U_ZERO_ERROR;
+		if (GetDatabaseEncoding() == PG_UTF8) {
+			/*
+			 * optimized and much simpler version for UTF-8
+			 */
+			uint32_t	buflen;
+			UErrorCode	status = U_ZERO_ERROR;
 
-		if (casemap == NULL)
-		{
-			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			if (casemap == NULL)
+			{
+				casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+				}
+			}
+
+			result = palloc(nbytes + 1); /* add a byte for null termination */
+
+			/* run desired function */
+			buflen = ucasemap_utf8ToLower(casemap, result, nbytes + 1, buff, nbytes, &status);
+
+			/*
+			 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+			 * Accept that we run the transcription twice in these rare cases rather than wasting
+			 * memory or clock cycles trying to figure out the correct size.
+			*/
+			if (buflen > nbytes) {
+				pfree(result);
+				result = palloc(buflen + 1);
+				status = U_ZERO_ERROR;
+				buflen = ucasemap_utf8ToLower(casemap, result, buflen + 1, buff, nbytes, &status);
+			}
 			if (U_FAILURE(status))
 			{
 				ereport(ERROR,
-						(errcode(status),
-						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+							(errcode(status),
+							 errmsg("ICU error: Could not modify case")));
 			}
 		}
-
-		result = palloc(nbytes + 1); // add a byte for null termination
-
-		/* run desired function */
-		buflen = ucasemap_utf8ToLower(casemap, result, nbytes + 1, buff, nbytes, &status);
-
-		/*
-		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
-		 * Accept that we run the transcription twice in these rare cases rather than wasting
-		 * memory or clock cycles trying to figure out the correct size.
-		*/
-		if (buflen > nbytes) {
-			pfree(result);
-			result = palloc(buflen + 1);
-			status = U_ZERO_ERROR;
-			buflen = ucasemap_utf8ToLower(casemap, result, buflen + 1, buff, nbytes, &status);
-		}
-		if (U_FAILURE(status))
+		else
 		{
-			ereport(ERROR,
-						(errcode(status),
-						 errmsg("ICU error: Could not modify case")));
+			/*
+			 * Multibyte but not UTF-8.
+			 * Here we are forced to convert to Unicode before running the desired
+			 * transcription and then convert back.
+			 */
+			UChar       sourcebuf[UTEXTBUFLEN], destbuf[UTEXTBUFLEN];
+			UChar      *source, *dest;
+			int			buflen;
+			size_t		result_size, usize;
+			UErrorCode  status = U_ZERO_ERROR;
+
+			if (conv == NULL)
+			{
+				conv = ucnv_open(NULL, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: oracle_compat.c, could not get converter for \"%s\"", ucnv_getDefaultName())));
+				}
+			}
+
+			if (nbytes >= UTEXTBUFLEN / sizeof(UChar))
+			{
+				buflen = (nbytes + 1) * sizeof(UChar);
+				source = palloc(buflen);
+				dest = palloc(buflen);
+			}
+			else
+			{
+				buflen = UTEXTBUFLEN;
+				source = sourcebuf;
+				dest = destbuf;
+			}
+			/* convert to UTF-16 */
+			ucnv_toUChars(conv, source, buflen, buff, nbytes, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: Could not convert string")));
+			}
+
+			/* run desired function */
+			buflen = u_strToLower(dest, buflen, source, -1, NULL, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: Could not modify case")));
+			}
+
+			/* and convert modified unicode string back to text */
+			result_size = UCNV_GET_MAX_BYTES_FOR_STRING(buflen, ucnv_getMaxCharSize(conv));
+			result = palloc(result_size);
+
+			usize = ucnv_fromUChars(conv, result, result_size,
+									 dest, buflen, &status);
+
+			if (U_FAILURE(status))
+			{
+				/* Invalid multibyte character encountered ... shouldn't happen */
+				ereport(ERROR,
+						(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+						 errmsg("ICU: invalid multibyte character for locale")));
+			}
+
+			Assert(usize <= (size_t) (buflen * sizeof(UChar)));
+
+			if (nbytes >= UTEXTBUFLEN / sizeof(UChar))
+			{
+				pfree(source);
+				pfree(dest);
+			}
 		}
 	}
 #else
@@ -1676,41 +1763,123 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 	/* use ICU only when max encoding length > one */
 	if (pg_database_encoding_max_length() > 1)
 	{
-		uint32_t	buflen;
-		UErrorCode	status = U_ZERO_ERROR;
+		if (GetDatabaseEncoding() == PG_UTF8) {
+			/*
+			 * optimized and much simpler version for UTF-8
+			 */
+			uint32_t	buflen;
+			UErrorCode	status = U_ZERO_ERROR;
 
-		if (casemap == NULL)
-		{
-			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			if (casemap == NULL)
+			{
+				casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+				}
+			}
+
+			result = palloc(nbytes + 1); // add a byte for null termination
+
+			/* run desired function */
+			buflen = ucasemap_utf8ToUpper(casemap, result, nbytes + 1, buff, nbytes, &status);
+
+			/*
+			 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+			 * Accept that we run the transcription twice in these rare cases rather than wasting
+			 * memory or clock cycles trying to figure out the correct size.
+			*/
+			if (buflen > nbytes) {
+				pfree(result);
+				result = palloc(buflen + 1);
+				status = U_ZERO_ERROR;
+				buflen = ucasemap_utf8ToUpper(casemap, result + 1, buflen, buff, nbytes, &status);
+			}
 			if (U_FAILURE(status))
 			{
 				ereport(ERROR,
-						(errcode(status),
-						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+							(errcode(status),
+							 errmsg("ICU error: Could not modify case")));
 			}
 		}
-
-		result = palloc(nbytes + 1); // add a byte for null termination
-
-		/* run desired function */
-		buflen = ucasemap_utf8ToUpper(casemap, result, nbytes + 1, buff, nbytes, &status);
-
-		/*
-		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
-		 * Accept that we run the transcription twice in these rare cases rather than wasting
-		 * memory or clock cycles trying to figure out the correct size.
-		*/
-		if (buflen > nbytes) {
-			pfree(result);
-			result = palloc(buflen + 1);
-			status = U_ZERO_ERROR;
-			buflen = ucasemap_utf8ToUpper(casemap, result + 1, buflen, buff, nbytes, &status);
-		}
-		if (U_FAILURE(status))
+		else
 		{
-			ereport(ERROR,
-						(errcode(status),
-						 errmsg("ICU error: Could not modify case")));
+			/*
+			 * Multibyte but not UTF-8.
+			 * Here we are forced to convert to Unicode before running the desired
+			 * transcription and then convert back.
+			 */
+			UChar       sourcebuf[UTEXTBUFLEN], destbuf[UTEXTBUFLEN];
+			UChar      *source, *dest;
+			int			buflen;
+			size_t		result_size, usize;
+			UErrorCode  status = U_ZERO_ERROR;
+
+			if (conv == NULL)
+			{
+				conv = ucnv_open(NULL, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: oracle_compat.c, could not get converter for \"%s\"", ucnv_getDefaultName())));
+				}
+			}
+
+			if (nbytes >= UTEXTBUFLEN / sizeof(UChar))
+			{
+				buflen = (nbytes + 1) * sizeof(UChar);
+				source = palloc(buflen);
+				dest = palloc(buflen);
+			}
+			else
+			{
+				buflen = UTEXTBUFLEN;
+				source = sourcebuf;
+				dest = destbuf;
+			}
+			/* convert to UTF-16 */
+			ucnv_toUChars(conv, source, buflen, buff, nbytes, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: Could not convert string")));
+			}
+
+			/* run desired function */
+			buflen = u_strToUpper(dest, buflen, source, -1, NULL, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: Could not modify case")));
+			}
+
+			/* and convert modified unicode string back to text */
+			result_size = UCNV_GET_MAX_BYTES_FOR_STRING(buflen, ucnv_getMaxCharSize(conv));
+			result = palloc(result_size);
+
+			usize = ucnv_fromUChars(conv, result, result_size,
+									 dest, buflen, &status);
+
+			if (U_FAILURE(status))
+			{
+				/* Invalid multibyte character encountered ... shouldn't happen */
+				ereport(ERROR,
+						(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+						 errmsg("ICU: invalid multibyte character for locale")));
+			}
+
+			Assert(usize <= (size_t) (buflen * sizeof(UChar)));
+
+			if (nbytes >= UTEXTBUFLEN / sizeof(UChar))
+			{
+				pfree(source);
+				pfree(dest);
+			}
 		}
 	}
 #else
@@ -1840,41 +2009,123 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 	/* use ICU only when max encoding length > one */
 	if (pg_database_encoding_max_length() > 1)
 	{
-		uint32_t	buflen;
-		UErrorCode	status = U_ZERO_ERROR;
+		if (GetDatabaseEncoding() == PG_UTF8) {
+			/*
+			 * optimized and much simpler version for UTF-8
+			 */
+			uint32_t	buflen;
+			UErrorCode	status = U_ZERO_ERROR;
 
-		if (casemap == NULL)
-		{
-			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			if (casemap == NULL)
+			{
+				casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+				}
+			}
+
+			result = palloc(nbytes + 1); // add a byte for null termination
+
+			/* run desired function */
+			buflen = ucasemap_utf8ToTitle(casemap, result, nbytes + 1, buff, nbytes, &status);
+
+			/*
+			 * In some corner cases like Turkic `I', resulting char* can be longer than source.
+			 * Accept that we run the transcription twice in these rare cases rather than wasting
+			 * memory or clock cycles trying to figure out the correct size.
+			*/
+			if (buflen > nbytes) {
+				pfree(result);
+				result = palloc(buflen + 1);
+				status = U_ZERO_ERROR;
+				buflen = ucasemap_utf8ToTitle(casemap, result, buflen + 1, buff, nbytes, &status);
+			}
 			if (U_FAILURE(status))
 			{
 				ereport(ERROR,
-						(errcode(status),
-						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
+							(errcode(status),
+							 errmsg("ICU error: Could not modify case")));
 			}
 		}
-
-		result = palloc(nbytes + 1); // add a byte for null termination
-
-		/* run desired function */
-		buflen = ucasemap_utf8ToTitle(casemap, result, nbytes + 1, buff, nbytes, &status);
-
-		/*
-		 * In some corner cases like Turkic `I', resulting char* can be longer than source.
-		 * Accept that we run the transcription twice in these rare cases rather than wasting
-		 * memory or clock cycles trying to figure out the correct size.
-		*/
-		if (buflen > nbytes) {
-			pfree(result);
-			result = palloc(buflen + 1);
-			status = U_ZERO_ERROR;
-			buflen = ucasemap_utf8ToTitle(casemap, result, buflen + 1, buff, nbytes, &status);
-		}
-		if (U_FAILURE(status))
+		else
 		{
-			ereport(ERROR,
-						(errcode(status),
-						 errmsg("ICU error: Could not modify case")));
+			/*
+			 * Multibyte but not UTF-8.
+			 * Here we are forced to convert to Unicode before running the desired
+			 * transcription and then convert back.
+			 */
+			UChar       sourcebuf[UTEXTBUFLEN], destbuf[UTEXTBUFLEN];
+			UChar      *source, *dest;
+			int			buflen;
+			size_t		result_size, usize;
+			UErrorCode  status = U_ZERO_ERROR;
+
+			if (conv == NULL)
+			{
+				conv = ucnv_open(NULL, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: oracle_compat.c, could not get converter for \"%s\"", ucnv_getDefaultName())));
+				}
+			}
+
+			if (nbytes >= UTEXTBUFLEN / sizeof(UChar))
+			{
+				buflen = (nbytes + 1) * sizeof(UChar);
+				source = palloc(buflen);
+				dest = palloc(buflen);
+			}
+			else
+			{
+				buflen = UTEXTBUFLEN;
+				source = sourcebuf;
+				dest = destbuf;
+			}
+			/* convert to UTF-16 */
+			ucnv_toUChars(conv, source, buflen, buff, nbytes, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: Could not convert string")));
+			}
+
+			/* run desired function */
+			buflen = u_strToTitle(dest, buflen, source, -1, NULL, NULL, &status);
+			if (U_FAILURE(status))
+			{
+				ereport(ERROR,
+							(errcode(status),
+							 errmsg("ICU error: Could not modify case")));
+			}
+
+			/* and convert modified unicode string back to text */
+			result_size = UCNV_GET_MAX_BYTES_FOR_STRING(buflen, ucnv_getMaxCharSize(conv));
+			result = palloc(result_size);
+
+			usize = ucnv_fromUChars(conv, result, result_size,
+									 dest, buflen, &status);
+
+			if (U_FAILURE(status))
+			{
+				/* Invalid multibyte character encountered ... shouldn't happen */
+				ereport(ERROR,
+						(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+						 errmsg("ICU: invalid multibyte character for locale")));
+			}
+
+			Assert(usize <= (size_t) (buflen * sizeof(UChar)));
+
+			if (nbytes >= UTEXTBUFLEN / sizeof(UChar))
+			{
+				pfree(source);
+				pfree(dest);
+			}
 		}
 	}
 #else
