@@ -478,6 +478,74 @@ SELECT t1."C 1" FROM "S 1"."T 1" t1 left join ft1 t2 join ft2 t3 on (t2.c1 = t3.
  110
 (10 rows)
 
+-- Test similar to above, except that the full join prevents any equivalence
+-- classes from being merged. This produces single relation equivalence classes
+-- included in join restrictions.
+EXPLAIN (COSTS false, VERBOSE)
+	SELECT t1."C 1", t2.c1, t3.c1 FROM "S 1"."T 1" t1 left join ft1 t2 full join ft2 t3 on (t2.c1 = t3.c1) on (t3.c1 = t1."C 1") OFFSET 100 LIMIT 10;
+                                                                            QUERY PLAN                                                                            
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   Output: t1."C 1", t2.c1, t3.c1
+   ->  Merge Right Join
+         Output: t1."C 1", t2.c1, t3.c1
+         Merge Cond: (t3.c1 = t1."C 1")
+         ->  Foreign Scan
+               Output: t3.c1, t2.c1
+               Relations: (public.ft2 t3) LEFT JOIN (public.ft1 t2)
+               Remote SQL: SELECT r3."C 1", r2."C 1" FROM ("S 1"."T 1" r3 LEFT JOIN "S 1"."T 1" r2 ON (((r2."C 1" = r3."C 1")))) ORDER BY r3."C 1" ASC NULLS LAST
+         ->  Index Only Scan using t1_pkey on "S 1"."T 1" t1
+               Output: t1."C 1"
+(11 rows)
+
+SELECT t1."C 1", t2.c1, t3.c1 FROM "S 1"."T 1" t1 left join ft1 t2 full join ft2 t3 on (t2.c1 = t3.c1) on (t3.c1 = t1."C 1") OFFSET 100 LIMIT 10;
+ C 1 | c1  | c1  
+-----+-----+-----
+ 101 | 101 | 101
+ 102 | 102 | 102
+ 103 | 103 | 103
+ 104 | 104 | 104
+ 105 | 105 | 105
+ 106 | 106 | 106
+ 107 | 107 | 107
+ 108 | 108 | 108
+ 109 | 109 | 109
+ 110 | 110 | 110
+(10 rows)
+
+-- Test similar to above with all full outer joins
+EXPLAIN (COSTS false, VERBOSE)
+	SELECT t1."C 1", t2.c1, t3.c1 FROM "S 1"."T 1" t1 full join ft1 t2 full join ft2 t3 on (t2.c1 = t3.c1) on (t3.c1 = t1."C 1") OFFSET 100 LIMIT 10;
+                                                                            QUERY PLAN                                                                            
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   Output: t1."C 1", t2.c1, t3.c1
+   ->  Merge Full Join
+         Output: t1."C 1", t2.c1, t3.c1
+         Merge Cond: (t3.c1 = t1."C 1")
+         ->  Foreign Scan
+               Output: t2.c1, t3.c1
+               Relations: (public.ft1 t2) FULL JOIN (public.ft2 t3)
+               Remote SQL: SELECT r2."C 1", r3."C 1" FROM ("S 1"."T 1" r2 FULL JOIN "S 1"."T 1" r3 ON (((r2."C 1" = r3."C 1")))) ORDER BY r3."C 1" ASC NULLS LAST
+         ->  Index Only Scan using t1_pkey on "S 1"."T 1" t1
+               Output: t1."C 1"
+(11 rows)
+
+SELECT t1."C 1", t2.c1, t3.c1 FROM "S 1"."T 1" t1 full join ft1 t2 full join ft2 t3 on (t2.c1 = t3.c1) on (t3.c1 = t1."C 1") OFFSET 100 LIMIT 10;
+ C 1 | c1  | c1  
+-----+-----+-----
+ 101 | 101 | 101
+ 102 | 102 | 102
+ 103 | 103 | 103
+ 104 | 104 | 104
+ 105 | 105 | 105
+ 106 | 106 | 106
+ 107 | 107 | 107
+ 108 | 108 | 108
+ 109 | 109 | 109
+ 110 | 110 | 110
+(10 rows)
+
 RESET enable_hashjoin;
 RESET enable_nestloop;
 -- ===================================================================
@@ -2133,6 +2201,64 @@ SELECT t1.c1, t2.c1 FROM (ft5 t1 JOIN v_ft5 t2 ON (t1.c1 = t2.c1)) left join (ft
                Output: ft5.c1
                Remote SQL: SELECT c1 FROM "S 1"."T 4"
 (27 rows)
+
+-- non-Var items in targelist of the nullable rel of a join preventing
+-- push-down in some cases
+-- unable to push {ft1, ft2}
+EXPLAIN (COSTS false, VERBOSE)
+SELECT q.a, ft2.c1 FROM (SELECT 13 FROM ft1 WHERE c1 = 13) q(a) RIGHT JOIN ft2 ON (q.a = ft2.c1) WHERE ft2.c1 BETWEEN 10 AND 15;
+                                                        QUERY PLAN                                                         
+---------------------------------------------------------------------------------------------------------------------------
+ Nested Loop Left Join
+   Output: (13), ft2.c1
+   Join Filter: (13 = ft2.c1)
+   ->  Foreign Scan on public.ft2
+         Output: ft2.c1
+         Remote SQL: SELECT "C 1" FROM "S 1"."T 1" WHERE (("C 1" >= 10)) AND (("C 1" <= 15)) ORDER BY "C 1" ASC NULLS LAST
+   ->  Materialize
+         Output: (13)
+         ->  Foreign Scan on public.ft1
+               Output: 13
+               Remote SQL: SELECT NULL FROM "S 1"."T 1" WHERE (("C 1" = 13))
+(11 rows)
+
+SELECT q.a, ft2.c1 FROM (SELECT 13 FROM ft1 WHERE c1 = 13) q(a) RIGHT JOIN ft2 ON (q.a = ft2.c1) WHERE ft2.c1 BETWEEN 10 AND 15;
+ a  | c1 
+----+----
+    | 10
+    | 11
+    | 12
+ 13 | 13
+    | 14
+    | 15
+(6 rows)
+
+-- ok to push {ft1, ft2} but not {ft1, ft2, ft4}
+EXPLAIN (COSTS false, VERBOSE)
+SELECT ft4.c1, q.* FROM ft4 LEFT JOIN (SELECT 13, ft1.c1, ft2.c1 FROM ft1 RIGHT JOIN ft2 ON (ft1.c1 = ft2.c1) WHERE ft1.c1 = 12) q(a, b, c) ON (ft4.c1 = q.b) WHERE ft4.c1 BETWEEN 10 AND 15;
+                                                                                    QUERY PLAN                                                                                     
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop Left Join
+   Output: ft4.c1, (13), ft1.c1, ft2.c1
+   Join Filter: (ft4.c1 = ft1.c1)
+   ->  Foreign Scan on public.ft4
+         Output: ft4.c1, ft4.c2, ft4.c3
+         Remote SQL: SELECT c1 FROM "S 1"."T 3" WHERE ((c1 >= 10)) AND ((c1 <= 15))
+   ->  Materialize
+         Output: ft1.c1, ft2.c1, (13)
+         ->  Foreign Scan
+               Output: ft1.c1, ft2.c1, 13
+               Relations: (public.ft1) INNER JOIN (public.ft2)
+               Remote SQL: SELECT r4."C 1", r5."C 1" FROM ("S 1"."T 1" r4 INNER JOIN "S 1"."T 1" r5 ON (((r5."C 1" = 12)) AND ((r4."C 1" = 12)))) ORDER BY r4."C 1" ASC NULLS LAST
+(12 rows)
+
+SELECT ft4.c1, q.* FROM ft4 LEFT JOIN (SELECT 13, ft1.c1, ft2.c1 FROM ft1 RIGHT JOIN ft2 ON (ft1.c1 = ft2.c1) WHERE ft1.c1 = 12) q(a, b, c) ON (ft4.c1 = q.b) WHERE ft4.c1 BETWEEN 10 AND 15;
+ c1 | a  | b  | c  
+----+----+----+----
+ 10 |    |    |   
+ 12 | 13 | 12 | 12
+ 14 |    |    |   
+(3 rows)
 
 -- recreate the dropped user mapping for further tests
 CREATE USER MAPPING FOR CURRENT_USER SERVER loopback;

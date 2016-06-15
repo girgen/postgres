@@ -669,6 +669,15 @@ postgresGetForeignRelSize(PlannerInfo *root,
  * we have and want to test whether any of them are useful.  For a foreign
  * table, we don't know what indexes are present on the remote side but
  * want to speculate about which ones we'd like to use if they existed.
+ *
+ * This function returns a list of potentially-useful equivalence classes,
+ * but it does not guarantee that an EquivalenceMember exists which contains
+ * Vars only from the given relation.  For example, given ft1 JOIN t1 ON
+ * ft1.x + t1.x = 0, this function will say that the equivalence class
+ * containing ft1.x + t1.x is potentially useful.  Supposing ft1 is remote and
+ * t1 is local (or on a different server), it will turn out that no useful
+ * ORDER BY clause can be generated.  It's not our job to figure that out
+ * here; we're only interested in identifying relevant ECs.
  */
 static List *
 get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel)
@@ -721,13 +730,32 @@ get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel)
 		/*
 		 * restrictinfo->mergeopfamilies != NIL is sufficient to guarantee
 		 * that left_ec and right_ec will be initialized, per comments in
-		 * distribute_qual_to_rels, and rel->joininfo should only contain ECs
-		 * where this relation appears on one side or the other.
+		 * distribute_qual_to_rels.
+		 *
+		 * We want to identify which side of this merge-joinable clause
+		 * contains columns from the relation produced by this RelOptInfo. We
+		 * test for overlap, not containment, because there could be extra
+		 * relations on either side.  For example, suppose we've got something
+		 * like ((A JOIN B ON A.x = B.x) JOIN C ON A.y = C.y) LEFT JOIN D ON
+		 * A.y = D.y.  The input rel might be the joinrel between A and B, and
+		 * we'll consider the join clause A.y = D.y. relids contains a
+		 * relation not involved in the join class (B) and the equivalence
+		 * class for the left-hand side of the clause contains a relation not
+		 * involved in the input rel (C).  Despite the fact that we have only
+		 * overlap and not containment in either direction, A.y is potentially
+		 * useful as a sort column.
+		 *
+		 * Note that it's even possible that relids overlaps neither side of
+		 * the join clause.  For example, consider A LEFT JOIN B ON A.x = B.x
+		 * AND A.x = 1.  The clause A.x = 1 will appear in B's joininfo list,
+		 * but overlaps neither side of B.  In that case, we just skip this
+		 * join clause, since it doesn't suggest a useful sort order for this
+		 * relation.
 		 */
-		if (bms_is_subset(relids, restrictinfo->right_ec->ec_relids))
+		if (bms_overlap(relids, restrictinfo->right_ec->ec_relids))
 			useful_eclass_list = list_append_unique_ptr(useful_eclass_list,
 													 restrictinfo->right_ec);
-		else if (bms_is_subset(relids, restrictinfo->left_ec->ec_relids))
+		else if (bms_overlap(relids, restrictinfo->left_ec->ec_relids))
 			useful_eclass_list = list_append_unique_ptr(useful_eclass_list,
 													  restrictinfo->left_ec);
 	}
@@ -3924,14 +3952,6 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
  * Assess whether the join between inner and outer relations can be pushed down
  * to the foreign server. As a side effect, save information we obtain in this
  * function to PgFdwRelationInfo passed in.
- *
- * Joins that satisfy conditions below are safe to push down.
- *
- * 1) Join type is INNER or OUTER (one of LEFT/RIGHT/FULL)
- * 2) Both outer and inner portions are safe to push-down
- * 3) All join conditions are safe to push down
- * 4) No relation has local filter (this can be relaxed for INNER JOIN, if we
- *	  can move unpushable clauses upwards in the join tree).
  */
 static bool
 foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
@@ -4008,6 +4028,26 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 			return false;
 	}
 
+	/*
+	 * deparseExplicitTargetList() isn't smart enough to handle anything other
+	 * than a Var.  In particular, if there's some PlaceHolderVar that would
+	 * need to be evaluated within this join tree (because there's an upper
+	 * reference to a quantity that may go to NULL as a result of an outer
+	 * join), then we can't try to push the join down because we'll fail when
+	 * we get to deparseExplicitTargetList().  However, a PlaceHolderVar that
+	 * needs to be evaluated *at the top* of this join tree is OK, because we
+	 * can do that locally after fetching the results from the remote side.
+	 */
+	foreach(lc, root->placeholder_list)
+	{
+		PlaceHolderInfo *phinfo = lfirst(lc);
+		Relids		relids = joinrel->relids;
+
+		if (bms_is_subset(phinfo->ph_eval_at, relids) &&
+			bms_nonempty_difference(relids, phinfo->ph_eval_at))
+			return false;
+	}
+
 	/* Save the join clauses, for later use. */
 	fpinfo->joinclauses = joinclauses;
 
@@ -4035,19 +4075,20 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 
 	/*
 	 * Pull the other remote conditions from the joining relations into join
-	 * clauses or other remote clauses (remote_conds) of this relation wherever
-	 * possible. This avoids building subqueries at every join step, which is
-	 * not currently supported by the deparser logic.
+	 * clauses or other remote clauses (remote_conds) of this relation
+	 * wherever possible. This avoids building subqueries at every join step,
+	 * which is not currently supported by the deparser logic.
 	 *
 	 * For an inner join, clauses from both the relations are added to the
-	 * other remote clauses. For LEFT and RIGHT OUTER join, the clauses from the
-	 * outer side are added to remote_conds since those can be evaluated after
-	 * the join is evaluated. The clauses from inner side are added to the
-	 * joinclauses, since they need to evaluated while constructing the join.
+	 * other remote clauses. For LEFT and RIGHT OUTER join, the clauses from
+	 * the outer side are added to remote_conds since those can be evaluated
+	 * after the join is evaluated. The clauses from inner side are added to
+	 * the joinclauses, since they need to evaluated while constructing the
+	 * join.
 	 *
-	 * For a FULL OUTER JOIN, the other clauses from either relation can not be
-	 * added to the joinclauses or remote_conds, since each relation acts as an
-	 * outer relation for the other. Consider such full outer join as
+	 * For a FULL OUTER JOIN, the other clauses from either relation can not
+	 * be added to the joinclauses or remote_conds, since each relation acts
+	 * as an outer relation for the other. Consider such full outer join as
 	 * unshippable because of the reasons mentioned above in this comment.
 	 *
 	 * The joining sides can not have local conditions, thus no need to test
@@ -4087,9 +4128,9 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	}
 
 	/*
-	 * For an inner join, as explained above all restrictions can be treated
-	 * alike. Treating the pushed down conditions as join conditions allows a
-	 * top level full outer join to be deparsed without requiring subqueries.
+	 * For an inner join, all restrictions can be treated alike. Treating the
+	 * pushed down conditions as join conditions allows a top level full outer
+	 * join to be deparsed without requiring subqueries.
 	 */
 	if (jointype == JOIN_INNER)
 	{

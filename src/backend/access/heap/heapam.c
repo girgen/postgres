@@ -1131,13 +1131,7 @@ relation_open(Oid relationId, LOCKMODE lockmode)
 
 	/* Make note that we've accessed a temporary relation */
 	if (RelationUsesLocalBuffers(r))
-	{
-		if (IsParallelWorker())
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-					 errmsg("cannot access temporary tables during a parallel operation")));
 		MyXactAccessedTempRel = true;
-	}
 
 	pgstat_initstats(r);
 
@@ -1183,13 +1177,7 @@ try_relation_open(Oid relationId, LOCKMODE lockmode)
 
 	/* Make note that we've accessed a temporary relation */
 	if (RelationUsesLocalBuffers(r))
-	{
-		if (IsParallelWorker())
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-					 errmsg("cannot access temporary tables during a parallel operation")));
 		MyXactAccessedTempRel = true;
-	}
 
 	pgstat_initstats(r);
 
@@ -1687,7 +1675,7 @@ heap_parallelscan_nextpage(HeapScanDesc scan)
 {
 	BlockNumber page = InvalidBlockNumber;
 	BlockNumber sync_startpage = InvalidBlockNumber;
-	BlockNumber	report_page = InvalidBlockNumber;
+	BlockNumber report_page = InvalidBlockNumber;
 	ParallelHeapScanDesc parallel_scan;
 
 	Assert(scan->rs_parallel);
@@ -3019,7 +3007,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	Assert(ItemPointerIsValid(tid));
 
 	/*
-	 * Forbid this during a parallel operation, lets it allocate a combocid.
+	 * Forbid this during a parallel operation, lest it allocate a combocid.
 	 * Other workers might need that combocid for visibility checks, and we
 	 * have no provision for broadcasting it to them.
 	 */
@@ -7036,8 +7024,8 @@ heap_tuple_needs_freeze(HeapTupleHeader tuple, TransactionId cutoff_xid,
 
 	/*
 	 * The considerations for multixacts are complicated; look at
-	 * heap_freeze_tuple for justifications.  This routine had better be in
-	 * sync with that one!
+	 * heap_prepare_freeze_tuple for justifications.  This routine had better
+	 * be in sync with that one!
 	 */
 	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
 	{
@@ -7898,8 +7886,8 @@ heap_xlog_visible(XLogReaderState *record)
 			PageInit(vmpage, BLCKSZ, 0);
 
 		/*
-		 * XLogReplayBufferExtended locked the buffer. But visibilitymap_set
-		 * will handle locking itself.
+		 * XLogReadBufferForRedoExtended locked the buffer. But
+		 * visibilitymap_set will handle locking itself.
 		 */
 		LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 

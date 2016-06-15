@@ -5197,9 +5197,9 @@ text_format(PG_FUNCTION_ARGS)
 				/* should not get here, because of previous check */
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					  errmsg("unrecognized format() type specifier \"%c\"",
-							 *cp),
-					  errhint("For a single \"%%\" use \"%%%%\".")));
+						 errmsg("unrecognized format() type specifier \"%c\"",
+								*cp),
+						 errhint("For a single \"%%\" use \"%%%%\".")));
 				break;
 		}
 	}
