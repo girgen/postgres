@@ -41,6 +41,7 @@
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 #ifdef USE_ICU
+#define U_CHARSET_IS_UTF8 1
 #include <unicode/ucnv.h>
 #endif /* USE_ICU */
 
