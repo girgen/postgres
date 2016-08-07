@@ -19,6 +19,9 @@
 
 #include "utils/guc.h"
 
+#ifdef USE_ICU
+#include <unicode/ucol.h>
+#endif
 
 /* GUC settings */
 extern char *locale_messages;
@@ -70,6 +73,9 @@ typedef locale_t pg_locale_t;
 typedef int pg_locale_t;
 #endif
 
+#ifdef USE_ICU
+extern UCollator * pg_icu_collator_from_collation(Oid collid);
+#endif
 extern pg_locale_t pg_newlocale_from_collation(Oid collid);
 
 /* These functions convert from/to libc's wchar_t, *not* pg_wchar_t */
