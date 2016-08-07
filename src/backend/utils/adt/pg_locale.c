@@ -63,6 +63,10 @@
 #include "utils/pg_locale.h"
 #include "utils/syscache.h"
 
+#ifdef USE_ICU
+#include <unicode/ucol.h>
+#endif
+
 #ifdef WIN32
 /*
  * This Windows file defines StrNCpy. We don't need it here, so we undefine
@@ -118,6 +122,9 @@ typedef struct
 	bool		ctype_is_c;		/* is collation's LC_CTYPE C? */
 	bool		flags_valid;	/* true if above flags are valid */
 	pg_locale_t locale;			/* locale_t struct, or 0 if not valid */
+#ifdef USE_ICU
+	UCollator  *icu_collator;
+#endif
 } collation_cache_entry;
 
 static HTAB *collation_cache = NULL;
@@ -1070,6 +1077,29 @@ report_newlocale_failure(const char *localename)
 }
 #endif   /* HAVE_LOCALE_T */
 
+#ifdef USE_ICU
+UCollator *
+pg_icu_collator_from_collation(Oid collid)
+{
+	collation_cache_entry *cache_entry;
+
+	/* Callers must pass a valid OID */
+	Assert(OidIsValid(collid));
+
+	/* Return 0 for "default" collation, just in case caller forgets */
+	if (collid == DEFAULT_COLLATION_OID)
+		return NULL;
+
+	cache_entry = lookup_collation_cache(collid, false);
+
+	if (cache_entry->locale == 0)
+	{
+		pg_newlocale_from_collation(collid);
+		cache_entry = lookup_collation_cache(collid, false);
+	}
+	return cache_entry->icu_collator;
+}
+#endif
 
 /*
  * Create a locale_t from a collation OID.  Results are cached for the
@@ -1119,6 +1149,17 @@ pg_newlocale_from_collation(Oid collid)
 		collcollate = NameStr(collform->collcollate);
 		collctype = NameStr(collform->collctype);
 
+#ifdef USE_ICU
+		UErrorCode  status = U_ZERO_ERROR;
+		UCollator *icu_collator = ucol_open(collcollate, &status);
+		if (U_FAILURE(status))
+		{
+			ereport(WARNING,
+					(errcode(status),
+					 errmsg("ICU Error: pg_locale.c, could not open collator %s", collcollate)));
+		}
+		cache_entry->icu_collator = icu_collator;
+#endif
 		if (strcmp(collcollate, collctype) == 0)
 		{
 			/* Normal case where they're the same */
