@@ -2168,6 +2168,7 @@ create_projection_path(PlannerInfo *root,
 					   PathTarget *target)
 {
 	ProjectionPath *pathnode = makeNode(ProjectionPath);
+	PathTarget *oldtarget = subpath->pathtarget;
 
 	pathnode->path.pathtype = T_Result;
 	pathnode->path.parent = rel;
@@ -2176,7 +2177,8 @@ create_projection_path(PlannerInfo *root,
 	pathnode->path.param_info = NULL;
 	pathnode->path.parallel_aware = false;
 	pathnode->path.parallel_safe = rel->consider_parallel &&
-		subpath->parallel_safe;
+		subpath->parallel_safe &&
+		!has_parallel_hazard((Node *) target->exprs, false);
 	pathnode->path.parallel_workers = subpath->parallel_workers;
 	/* Projection does not change the sort order */
 	pathnode->path.pathkeys = subpath->pathkeys;
@@ -2184,13 +2186,46 @@ create_projection_path(PlannerInfo *root,
 	pathnode->subpath = subpath;
 
 	/*
-	 * The Result node's cost is cpu_tuple_cost per row, plus the cost of
-	 * evaluating the tlist.  There is no qual to worry about.
+	 * We might not need a separate Result node.  If the input plan node type
+	 * can project, we can just tell it to project something else.  Or, if it
+	 * can't project but the desired target has the same expression list as
+	 * what the input will produce anyway, we can still give it the desired
+	 * tlist (possibly changing its ressortgroupref labels, but nothing else).
+	 * Note: in the latter case, create_projection_plan has to recheck our
+	 * conclusion; see comments therein.
 	 */
-	pathnode->path.rows = subpath->rows;
-	pathnode->path.startup_cost = subpath->startup_cost + target->cost.startup;
-	pathnode->path.total_cost = subpath->total_cost + target->cost.startup +
-		(cpu_tuple_cost + target->cost.per_tuple) * subpath->rows;
+	if (is_projection_capable_path(subpath) ||
+		equal(oldtarget->exprs, target->exprs))
+	{
+		/* No separate Result node needed */
+		pathnode->dummypp = true;
+
+		/*
+		 * Set cost of plan as subpath's cost, adjusted for tlist replacement.
+		 */
+		pathnode->path.rows = subpath->rows;
+		pathnode->path.startup_cost = subpath->startup_cost +
+			(target->cost.startup - oldtarget->cost.startup);
+		pathnode->path.total_cost = subpath->total_cost +
+			(target->cost.startup - oldtarget->cost.startup) +
+			(target->cost.per_tuple - oldtarget->cost.per_tuple) * subpath->rows;
+	}
+	else
+	{
+		/* We really do need the Result node */
+		pathnode->dummypp = false;
+
+		/*
+		 * The Result node's cost is cpu_tuple_cost per row, plus the cost of
+		 * evaluating the tlist.  There is no qual to worry about.
+		 */
+		pathnode->path.rows = subpath->rows;
+		pathnode->path.startup_cost = subpath->startup_cost +
+			target->cost.startup;
+		pathnode->path.total_cost = subpath->total_cost +
+			target->cost.startup +
+			(cpu_tuple_cost + target->cost.per_tuple) * subpath->rows;
+	}
 
 	return pathnode;
 }
@@ -2199,18 +2234,17 @@ create_projection_path(PlannerInfo *root,
  * apply_projection_to_path
  *	  Add a projection step, or just apply the target directly to given path.
  *
- * Most plan types include ExecProject, so we can implement a new projection
- * without an extra plan node: just replace the given path's pathtarget with
- * the desired one.  If the given path can't project, add a ProjectionPath.
+ * This has the same net effect as create_projection_path(), except that if
+ * a separate Result plan node isn't needed, we just replace the given path's
+ * pathtarget with the desired one.  This must be used only when the caller
+ * knows that the given path isn't referenced elsewhere and so can be modified
+ * in-place.
  *
- * We can also short-circuit cases where the targetlist expressions are
- * actually equal; this is not an uncommon case, since it may arise from
- * trying to apply a PathTarget with sortgroupref labeling to a derived
- * path without such labeling.
+ * If the input path is a GatherPath, we try to push the new target down to
+ * its input as well; this is a yet more invasive modification of the input
+ * path, which create_projection_path() can't do.
  *
- * This requires knowing that the source path won't be referenced for other
- * purposes (e.g., other possible paths), since we modify it in-place.  Note
- * also that we mustn't change the source path's parent link; so when it is
+ * Note that we mustn't change the source path's parent link; so when it is
  * add_path'd to "rel" things will be a bit inconsistent.  So far that has
  * not caused any trouble.
  *
@@ -2226,9 +2260,11 @@ apply_projection_to_path(PlannerInfo *root,
 {
 	QualCost	oldcost;
 
-	/* Make a separate ProjectionPath if needed */
-	if (!is_projection_capable_path(path) &&
-		!equal(path->pathtarget->exprs, target->exprs))
+	/*
+	 * If given path can't project, we might need a Result node, so make a
+	 * separate ProjectionPath.
+	 */
+	if (!is_projection_capable_path(path))
 		return (Path *) create_projection_path(root, rel, path, target);
 
 	/*
@@ -2245,7 +2281,7 @@ apply_projection_to_path(PlannerInfo *root,
 	/*
 	 * If the path happens to be a Gather path, we'd like to arrange for the
 	 * subpath to return the required target list so that workers can help
-	 * project. But if there is something that is not parallel-safe in the
+	 * project.  But if there is something that is not parallel-safe in the
 	 * target expressions, then we can't.
 	 */
 	if (IsA(path, GatherPath) &&
@@ -2257,19 +2293,27 @@ apply_projection_to_path(PlannerInfo *root,
 		 * We always use create_projection_path here, even if the subpath is
 		 * projection-capable, so as to avoid modifying the subpath in place.
 		 * It seems unlikely at present that there could be any other
-		 * references to the subpath anyway, but better safe than sorry.
-		 * (create_projection_plan will only insert a Result node if the
-		 * subpath is not projection-capable, so we only include the cost of
-		 * that node if it will actually be inserted.  This is a bit grotty
-		 * but we can improve it later if it seems important.)
+		 * references to the subpath, but better safe than sorry.
+		 *
+		 * Note that we don't change the GatherPath's cost estimates; it might
+		 * be appropriate to do so, to reflect the fact that the bulk of the
+		 * target evaluation will happen in workers.
 		 */
-		if (!is_projection_capable_path(gpath->subpath))
-			gpath->path.total_cost += cpu_tuple_cost * gpath->subpath->rows;
 		gpath->subpath = (Path *)
 			create_projection_path(root,
 								   gpath->subpath->parent,
 								   gpath->subpath,
 								   target);
+	}
+	else if (path->parallel_safe &&
+			 has_parallel_hazard((Node *) target->exprs, false))
+	{
+		/*
+		 * We're inserting a parallel-restricted target list into a path
+		 * currently marked parallel-safe, so we have to mark it as no longer
+		 * safe.
+		 */
+		path->parallel_safe = false;
 	}
 
 	return path;
@@ -2433,12 +2477,11 @@ create_upper_unique_path(PlannerInfo *root,
  * 'subpath' is the path representing the source of data
  * 'target' is the PathTarget to be computed
  * 'aggstrategy' is the Agg node's basic implementation strategy
+ * 'aggsplit' is the Agg node's aggregate-splitting mode
  * 'groupClause' is a list of SortGroupClause's representing the grouping
  * 'qual' is the HAVING quals if any
  * 'aggcosts' contains cost info about the aggregate functions to be computed
  * 'numGroups' is the estimated number of groups (1 if not grouping)
- * 'combineStates' is set to true if the Agg node should combine agg states
- * 'finalizeAggs' is set to false if the Agg node should not call the finalfn
  */
 AggPath *
 create_agg_path(PlannerInfo *root,
@@ -2446,13 +2489,11 @@ create_agg_path(PlannerInfo *root,
 				Path *subpath,
 				PathTarget *target,
 				AggStrategy aggstrategy,
+				AggSplit aggsplit,
 				List *groupClause,
 				List *qual,
 				const AggClauseCosts *aggcosts,
-				double numGroups,
-				bool combineStates,
-				bool finalizeAggs,
-				bool serialStates)
+				double numGroups)
 {
 	AggPath    *pathnode = makeNode(AggPath);
 
@@ -2472,12 +2513,10 @@ create_agg_path(PlannerInfo *root,
 	pathnode->subpath = subpath;
 
 	pathnode->aggstrategy = aggstrategy;
+	pathnode->aggsplit = aggsplit;
 	pathnode->numGroups = numGroups;
 	pathnode->groupClause = groupClause;
 	pathnode->qual = qual;
-	pathnode->finalizeAggs = finalizeAggs;
-	pathnode->combineStates = combineStates;
-	pathnode->serialStates = serialStates;
 
 	cost_agg(&pathnode->path, root,
 			 aggstrategy, aggcosts,

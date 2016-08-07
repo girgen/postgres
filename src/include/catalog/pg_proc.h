@@ -1347,9 +1347,9 @@ DATA(insert OID = 1291 (  suppress_redundant_updates_trigger	PGNSP PGUID 12 1 0 
 DESCR("trigger to suppress updates when new and old records match");
 
 DATA(insert OID = 1292 ( tideq			   PGNSP PGUID 12 1 0 0 0 f f f t t f i s 2 0 16 "27 27" _null_ _null_ _null_ _null_ _null_ tideq _null_ _null_ _null_ ));
-DATA(insert OID = 1293 ( currtid		   PGNSP PGUID 12 1 0 0 0 f f f f t f v s 2 0 27 "26 27" _null_ _null_ _null_ _null_ _null_ currtid_byreloid _null_ _null_ _null_ ));
+DATA(insert OID = 1293 ( currtid		   PGNSP PGUID 12 1 0 0 0 f f f f t f v u 2 0 27 "26 27" _null_ _null_ _null_ _null_ _null_ currtid_byreloid _null_ _null_ _null_ ));
 DESCR("latest tid of a tuple");
-DATA(insert OID = 1294 ( currtid2		   PGNSP PGUID 12 1 0 0 0 f f f f t f v s 2 0 27 "25 27" _null_ _null_ _null_ _null_ _null_ currtid_byrelname _null_ _null_ _null_ ));
+DATA(insert OID = 1294 ( currtid2		   PGNSP PGUID 12 1 0 0 0 f f f f t f v u 2 0 27 "25 27" _null_ _null_ _null_ _null_ _null_ currtid_byrelname _null_ _null_ _null_ ));
 DESCR("latest tid of a tuple");
 DATA(insert OID = 1265 ( tidne			   PGNSP PGUID 12 1 0 0 0 f f f t t f i s 2 0 16 "27 27" _null_ _null_ _null_ _null_ _null_ tidne _null_ _null_ _null_ ));
 DATA(insert OID = 2790 ( tidgt			   PGNSP PGUID 12 1 0 0 0 f f f t t f i s 2 0 16 "27 27" _null_ _null_ _null_ _null_ _null_ tidgt _null_ _null_ _null_ ));
@@ -2451,11 +2451,11 @@ DATA(insert OID = 3337 (  numeric_avg_combine	 PGNSP PGUID 12 1 0 0 0 f f f f f 
 DESCR("aggregate combine function");
 DATA(insert OID = 2740 (  numeric_avg_serialize    PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 17 "2281" _null_ _null_ _null_ _null_ _null_ numeric_avg_serialize _null_ _null_ _null_ ));
 DESCR("aggregate serial function");
-DATA(insert OID = 2741 (  numeric_avg_deserialize	 PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "17" _null_ _null_ _null_ _null_ _null_ numeric_avg_deserialize _null_ _null_ _null_ ));
+DATA(insert OID = 2741 (  numeric_avg_deserialize	 PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 2281 "17 2281" _null_ _null_ _null_ _null_ _null_ numeric_avg_deserialize _null_ _null_ _null_ ));
 DESCR("aggregate deserial function");
 DATA(insert OID = 3335 (  numeric_serialize    PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 17 "2281" _null_ _null_ _null_ _null_ _null_ numeric_serialize _null_ _null_ _null_ ));
 DESCR("aggregate serial function");
-DATA(insert OID = 3336 (  numeric_deserialize	 PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "17" _null_ _null_ _null_ _null_ _null_ numeric_deserialize _null_ _null_ _null_ ));
+DATA(insert OID = 3336 (  numeric_deserialize	 PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 2281 "17 2281" _null_ _null_ _null_ _null_ _null_ numeric_deserialize _null_ _null_ _null_ ));
 DESCR("aggregate deserial function");
 DATA(insert OID = 3548 (  numeric_accum_inv    PGNSP PGUID 12 1 0 0 0 f f f f f f i s 2 0 2281 "2281 1700" _null_ _null_ _null_ _null_ _null_ numeric_accum_inv _null_ _null_ _null_ ));
 DESCR("aggregate transition function");
@@ -2469,7 +2469,7 @@ DATA(insert OID = 3338 (  numeric_poly_combine	  PGNSP PGUID 12 1 0 0 0 f f f f 
 DESCR("aggregate combine function");
 DATA(insert OID = 3339 (  numeric_poly_serialize	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 17 "2281" _null_ _null_ _null_ _null_ _null_ numeric_poly_serialize _null_ _null_ _null_ ));
 DESCR("aggregate serial function");
-DATA(insert OID = 3340 (  numeric_poly_deserialize	  PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "17" _null_ _null_ _null_ _null_ _null_ numeric_poly_deserialize _null_ _null_ _null_ ));
+DATA(insert OID = 3340 (  numeric_poly_deserialize	  PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 2281 "17 2281" _null_ _null_ _null_ _null_ _null_ numeric_poly_deserialize _null_ _null_ _null_ ));
 DESCR("aggregate deserial function");
 DATA(insert OID = 2746 (  int8_avg_accum	   PGNSP PGUID 12 1 0 0 0 f f f f f f i s 2 0 2281 "2281 20" _null_ _null_ _null_ _null_ _null_ int8_avg_accum _null_ _null_ _null_ ));
 DESCR("aggregate transition function");
@@ -2485,9 +2485,9 @@ DATA(insert OID = 2785 (  int8_avg_combine	  PGNSP PGUID 12 1 0 0 0 f f f f f f 
 DESCR("aggregate combine function");
 DATA(insert OID = 2786 (  int8_avg_serialize	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 17 "2281" _null_ _null_ _null_ _null_ _null_ int8_avg_serialize _null_ _null_ _null_ ));
 DESCR("aggregate serial function");
-DATA(insert OID = 2787 (  int8_avg_deserialize	  PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 2281 "17" _null_ _null_ _null_ _null_ _null_ int8_avg_deserialize _null_ _null_ _null_ ));
+DATA(insert OID = 2787 (  int8_avg_deserialize	  PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 2281 "17 2281" _null_ _null_ _null_ _null_ _null_ int8_avg_deserialize _null_ _null_ _null_ ));
 DESCR("aggregate deserial function");
-DATA(insert OID = 3324 (  int4_avg_combine	  PGNSP PGUID 12 1 0 0 0 f f f f f f i s 2 0 2281 "2281 2281" _null_ _null_ _null_ _null_ _null_ int4_avg_combine _null_ _null_ _null_ ));
+DATA(insert OID = 3324 (  int4_avg_combine	  PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 1016 "1016 1016" _null_ _null_ _null_ _null_ _null_ int4_avg_combine _null_ _null_ _null_ ));
 DESCR("aggregate combine function");
 DATA(insert OID = 3178 (  numeric_sum	   PGNSP PGUID 12 1 0 0 0 f f f f f f i s 1 0 1700 "2281" _null_ _null_ _null_ _null_ _null_ numeric_sum _null_ _null_ _null_ ));
 DESCR("aggregate final function");
@@ -2746,7 +2746,7 @@ DATA(insert OID = 3318 (  pg_stat_get_progress_info			  PGNSP PGUID 12 1 100 0 0
 DESCR("statistics: information about progress of backends running maintenance command");
 DATA(insert OID = 3099 (  pg_stat_get_wal_senders	PGNSP PGUID 12 1 10 0 0 f f f f f t s r 0 0 2249 "" "{23,25,3220,3220,3220,3220,23,25}" "{o,o,o,o,o,o,o,o}" "{pid,state,sent_location,write_location,flush_location,replay_location,sync_priority,sync_state}" _null_ _null_ pg_stat_get_wal_senders _null_ _null_ _null_ ));
 DESCR("statistics: information about currently active replication");
-DATA(insert OID = 3317 (  pg_stat_get_wal_receiver	PGNSP PGUID 12 1 0 0 0 f f f f f f s r 0 0 2249 "" "{23,25,3220,23,3220,23,1184,1184,3220,1184,25}" "{o,o,o,o,o,o,o,o,o,o,o}" "{pid,status,receive_start_lsn,receive_start_tli,received_lsn,received_tli,last_msg_send_time,last_msg_receipt_time,latest_end_lsn,latest_end_time,slot_name}" _null_ _null_ pg_stat_get_wal_receiver _null_ _null_ _null_ ));
+DATA(insert OID = 3317 (  pg_stat_get_wal_receiver	PGNSP PGUID 12 1 0 0 0 f f f f f f s r 0 0 2249 "" "{23,25,3220,23,3220,23,1184,1184,3220,1184,25,25}" "{o,o,o,o,o,o,o,o,o,o,o,o}" "{pid,status,receive_start_lsn,receive_start_tli,received_lsn,received_tli,last_msg_send_time,last_msg_receipt_time,latest_end_lsn,latest_end_time,slot_name,conninfo}" _null_ _null_ pg_stat_get_wal_receiver _null_ _null_ _null_ ));
 DESCR("statistics: information about WAL receiver");
 DATA(insert OID = 2026 (  pg_backend_pid				PGNSP PGUID 12 1 0 0 0 f f f f t f s r 0 0 23 "" _null_ _null_ _null_ _null_ _null_ pg_backend_pid _null_ _null_ _null_ ));
 DESCR("statistics: current backend PID");
@@ -3135,7 +3135,7 @@ DESCR("xlog filename, given an xlog location");
 DATA(insert OID = 3165 ( pg_xlog_location_diff		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 1700 "3220 3220" _null_ _null_ _null_ _null_ _null_ pg_xlog_location_diff _null_ _null_ _null_ ));
 DESCR("difference in bytes, given two xlog locations");
 
-DATA(insert OID = 3809 ( pg_export_snapshot		PGNSP PGUID 12 1 0 0 0 f f f f t f v r 0 0 25 "" _null_ _null_ _null_ _null_ _null_ pg_export_snapshot _null_ _null_ _null_ ));
+DATA(insert OID = 3809 ( pg_export_snapshot		PGNSP PGUID 12 1 0 0 0 f f f f t f v u 0 0 25 "" _null_ _null_ _null_ _null_ _null_ pg_export_snapshot _null_ _null_ _null_ ));
 DESCR("export a snapshot");
 
 DATA(insert OID = 3810 (  pg_is_in_recovery		PGNSP PGUID 12 1 0 0 0 f f f f t f v s 0 0 16 "" _null_ _null_ _null_ _null_ _null_ pg_is_in_recovery _null_ _null_ _null_ ));
@@ -5284,7 +5284,7 @@ DESCR("get the replication progress of the current session");
 DATA(insert OID = 6010 ( pg_replication_origin_xact_setup PGNSP PGUID 12 1 0 0 0 f f f f t f v r 2 0 2278 "3220 1184" _null_ _null_ _null_ _null_ _null_ pg_replication_origin_xact_setup _null_ _null_ _null_ ));
 DESCR("setup the transaction's origin lsn and timestamp");
 
-DATA(insert OID = 6011 ( pg_replication_origin_xact_reset PGNSP PGUID 12 1 0 0 0 f f f f t f v r 2 0 2278 "3220 1184" _null_ _null_ _null_ _null_ _null_ pg_replication_origin_xact_reset _null_ _null_ _null_ ));
+DATA(insert OID = 6011 ( pg_replication_origin_xact_reset PGNSP PGUID 12 1 0 0 0 f f f f t f v r 0 0 2278 "" _null_ _null_ _null_ _null_ _null_ pg_replication_origin_xact_reset _null_ _null_ _null_ ));
 DESCR("reset the transaction's origin lsn and timestamp");
 
 DATA(insert OID = 6012 ( pg_replication_origin_advance PGNSP PGUID 12 1 0 0 0 f f f f t f v u 2 0 2278 "25 3220" _null_ _null_ _null_ _null_ _null_ pg_replication_origin_advance _null_ _null_ _null_ ));

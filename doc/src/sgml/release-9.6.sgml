@@ -7,7 +7,7 @@
   <note>
    <title>Release Date</title>
    <simpara>2016-??-??</simpara>
-   <simpara>Current as of 2016-05-08 (commit 6f69b9639)</simpara>
+   <simpara>Current as of 2016-07-16 (commit 606ccc5e7)</simpara>
   </note>
 
   <sect2>
@@ -136,6 +136,8 @@
 2016-04-05 [11c8669c0] Add parallel query support functions for assorted aggreg
 2016-04-08 [25fe8b5f1] Add a 'parallel_degree' reloption.
 2016-04-27 [59eb55127] Fix EXPLAIN VERBOSE output for parallel aggregate.
+2016-06-09 [c9ce4a1c6] Eliminate "parallel degree" terminology.
+2016-06-16 [75be66464] Invent min_parallel_relation_size GUC to replace a hard-
 -->
        <para>
         Parallel queries (Robert Haas, Amit Kapila, David Rowley, many others)
@@ -155,8 +157,9 @@
         configuration parameters
         <xref linkend="guc-max-parallel-workers-per-gather">,
         <xref linkend="guc-force-parallel-mode">,
-        <xref linkend="guc-parallel-setup-cost">, and
-        <xref linkend="guc-parallel-tuple-cost">.
+        <xref linkend="guc-parallel-setup-cost">,
+        <xref linkend="guc-parallel-tuple-cost">, and
+        <xref linkend="guc-min-parallel-relation-size">.
        </para>
       </listitem>
 
@@ -255,6 +258,7 @@
 2016-03-08 [77a1d1e79] Department of second thoughts: remove PD_ALL_FROZEN.
 2016-03-10 [fd31cd265] Don't vacuum all-frozen pages.
 2016-03-11 [7087166a8] pg_upgrade: Convert old visibility map format to new for
+2016-06-17 [ede62e56f] Add VACUUM (DISABLE_PAGE_SKIPPING) for emergencies.
 -->
        <para>
         Avoid re-vacuuming pages containing only frozen tuples
@@ -268,6 +272,13 @@
         visibility map, and can be skipped by vacuum even when it's doing
         transaction wraparound prevention.  This should greatly reduce the
         cost of maintaining large tables containing mostly-unchanging data.
+       </para>
+
+       <para>
+        If necessary, vacuum can be forced to process all-frozen pages
+        using its new <literal>DISABLE_PAGE_SKIPPING</> option.  This
+        should never be needed normally, but it might help for example
+        in recovering from visibility-map corruption.
        </para>
       </listitem>
 
@@ -336,7 +347,7 @@
         output list are executed in the order suggested by <literal>ORDER
         BY</>, and that they are not evaluated more times than required when
         there's a <literal>LIMIT</>.  Previously, these properties held if
-        the ordering was performed by an indexscan or pre-mergejoin sort,
+        the ordering was performed by an index scan or pre-merge-join sort,
         but not if it was performed by a top-level sort step.
        </para>
       </listitem>
@@ -349,6 +360,7 @@
 2016-04-26 [72a98a639] Don't open formally non-existent segments in _mdfd_getse
 2016-05-04 [a71248708] Fix transient mdsync() errors of truncated relations due
 2016-02-16 [7975c5e0a] Allow the WAL writer to flush WAL at a reduced rate.
+2016-06-10 [4bc0f165c] Change default of backend_flush_after GUC to 0 (disabled
 -->
        <para>
         Where feasible, trigger kernel writeback after a configurable number
@@ -446,14 +458,16 @@
       <listitem>
 <!--
 2016-04-08 [137805f89] Use Foreign Key relationships to infer multi-column join
+2016-06-07 [77ba61080] Revert "Use Foreign Key relationships to infer multi-col
+2016-06-18 [100340e2d] Restore foreign-key-aware estimation of join relation si
 -->
        <para>
-        Use foreign key relationships to infer selectivity for multi-column
+        Use foreign key relationships to infer selectivity for
         join predicates (Tomas Vondra, David Rowley)
        </para>
 
        <para>
-        If a table <literal>t</> has a multi-column foreign key restriction,
+        If a table <literal>t</> has a foreign key restriction,
         say <literal>(a,b) REFERENCES r (x,y)</>, then a <literal>WHERE</>
         condition such as <literal>t.a = r.x AND t.b = r.y</> cannot select
         more than one <literal>r</> row per <literal>t</> row.  The planner
@@ -529,7 +543,7 @@
 2016-01-26 [cc988fbb0] Improve ResourceOwners' behavior for large numbers of ow
 -->
        <para>
-        Improve performance of ResourceOwners with many tracked objects
+        Improve performance of resource owners with many tracked objects
         (Aleksander Alekseev)
        </para>
       </listitem>
@@ -809,6 +823,8 @@
       <listitem>
 <!--
 2016-01-07 [b1a9bad9e] pgstat: add WAL receiver status view & SRF
+2016-06-29 [9ed551e0a] Add conninfo to pg_stat_wal_receiver
+2016-07-07 [60d50769b] Rename pg_stat_wal_receiver.conn_info to conninfo.
 -->
        <para>
         Add <link linkend="pg-stat-wal-receiver-view"><structname>pg_stat_wal_receiver</></link>
@@ -1260,6 +1276,7 @@ XXX this is pending backpatch, may need to remove
       <listitem>
 <!--
 2016-04-05 [711768546] Implement backup API functions for non-exclusive backups
+2016-07-11 [87d84d67b] Fix start WAL filename for concurrent backups from stand
 -->
        <para>
         Extend <function>pg_start_backup()</> and <function>pg_stop_backup()</>
@@ -1316,10 +1333,12 @@ XXX this is pending backpatch, may need to remove
       <listitem>
 <!--
 2016-01-28 [fbe5a3fb7] Only try to push down foreign joins if the user mapping
+2016-07-15 [45639a052] Avoid invalidating all foreign-join cached plans when us
 -->
        <para>
         Consider performing joins of foreign tables remotely only when the
-        applicable user mappings match (Shigeru Hanada, Ashutosh Bapat)
+        tables will be accessed under the same role ID (Shigeru Hanada,
+        Ashutosh Bapat, Etsuro Fujita)
        </para>
 
        <para>
@@ -1327,7 +1346,7 @@ XXX this is pending backpatch, may need to remove
         of security entirely up to individual foreign data wrappers, but it
         would be easy for an FDW to inadvertently open up subtle security
         holes that way.  So, make it the core code's job to determine which
-        user mapping OID is relevant, and don't attempt join pushdown unless
+        role ID will access each table, and don't attempt join pushdown unless
         it's the same for all relevant relations.
        </para>
       </listitem>
@@ -1506,6 +1525,22 @@ XXX this is pending backpatch, may need to remove
 
       <listitem>
 <!--
+2016-07-11 [4d042999f] Print a given subplan only once in EXPLAIN.
+-->
+       <para>
+        Do not show the same subplan twice in <command>EXPLAIN</> output
+        (Tom Lane)
+       </para>
+
+       <para>
+        In certain cases, typically involving SubPlan nodes in index
+        conditions, <command>EXPLAIN</> would print data for the same
+        subplan twice.
+       </para>
+      </listitem>
+
+      <listitem>
+<!--
 2016-04-16 [c34df8a00] Disallow creation of indexes on system columns (except f
 -->
        <para>
@@ -1652,11 +1687,14 @@ XXX this is pending backpatch, may need to remove
       <listitem>
 <!--
 2016-04-07 [bb140506d] Phrase full text search.
+2016-06-27 [028350f61] Make exact distance match for FTS phrase operator
+2016-06-27 [3dbbd0f02] Do not fallback to AND for FTS phrase operator.
+2016-06-27 [6734a1cac] Change predecence of phrase operator.
 -->
        <para>
         Improve full-text search to support searching for phrases, that is,
         lexemes appearing adjacent to each other in a specific order, or with
-        at most a specified distance between them
+        a specified distance between them
         (Teodor Sigaev, Oleg Bartunov, Dmitry Ivanov)
        </para>
 
@@ -1665,8 +1703,8 @@ XXX this is pending backpatch, may need to remove
         using the new operators <literal>&lt;-&gt;</> and
         <literal>&lt;<replaceable>N</>&gt;</literal>.  The former means that
         the lexemes before and after it must appear adjacent to each other in
-        that order.  The latter means they can be separated by up
-        to <replaceable>N</> other lexemes.
+        that order.  The latter means they must be exactly <replaceable>N</>
+        lexemes apart.
        </para>
       </listitem>
 
@@ -2044,6 +2082,8 @@ This commit is also listed under libpq and psql
       <listitem>
 <!--
 2016-04-08 [5c3c3cd0a] Enhanced custom error in PLPythonu
+2016-06-11 [020140d84] PL/Python: Rename new keyword arguments of plpy.error()
+2016-07-02 [3a4a33ad4] PL/Python: Report argument parsing errors using exceptio
 -->
        <para>
         Extend PL/Python's error-reporting and message-reporting functions to
@@ -2366,6 +2406,7 @@ This commit is also listed under psql and PL/pgSQL
       <listitem>
 <!--
 2016-03-21 [dea2b5960] Improve header output from psql's \watch command.
+2016-06-15 [9901d8ac2] Use strftime("%c") to format timestamps in psql's \watch
 -->
        <para>
         Improve the headers output by the <command>\watch</> command
@@ -2376,6 +2417,8 @@ This commit is also listed under psql and PL/pgSQL
         Include the <command>\pset title</> string if one has been set, and
         shorten the prefabricated part of the header to be
         <literal><replaceable>timestamp</> (every <replaceable>N</>s)</literal>.
+        Also, the timestamp format now obeys <application>psql</>'s locale
+        environment.
        </para>
       </listitem>
 
@@ -2443,6 +2486,16 @@ This commit is also listed under libpq and PL/pgSQL
         Printing <literal>CONTEXT</> only for errors is now the default
         behavior.  This can be changed by setting the special variable
         <varname>SHOW_CONTEXT</varname>.
+       </para>
+      </listitem>
+
+      <listitem>
+<!--
+2016-07-11 [a670c24c3] Improve output of psql's \df+ command.
+-->
+       <para>
+        Make <command>\df+</> show function access privileges and
+        parallel-safety attributes (Michael Paquier)
        </para>
       </listitem>
 
@@ -2824,6 +2877,8 @@ This commit is also listed under libpq and PL/pgSQL
 2016-01-07 [c44d01383] Delay creation of subplan tlist until after create_plan(
 2016-02-18 [19a541143] Add an explicit representation of the output targetlist
 2016-03-07 [3fc6e2d7f] Make the upper part of the planner work by generating an
+2016-07-01 [5ce5e4a12] Set consider_parallel correctly for upper planner rels.
+2016-07-01 [9e703987a] Rethink the GetForeignUpperPaths API (again).
 -->
        <para>
         Make the planner deal with post-scan/join query steps by generating
@@ -2840,6 +2895,8 @@ This commit is also listed under libpq and PL/pgSQL
       <listitem>
 <!--
 2016-01-20 [a7de3dc5c] Support multi-stage aggregation.
+2016-06-22 [f8ace5477] Fix type-safety problem with parallel aggregate serial/d
+2016-06-26 [19e972d55] Rethink node-level representation of partial-aggregation
 -->
        <para>
         Support partial aggregation (David Rowley, Simon Riggs)
@@ -2973,6 +3030,22 @@ This commit is also listed under libpq and PL/pgSQL
        </para>
       </listitem>
 
+      <listitem>
+<!--
+2016-07-01 [548af97fc] Provide and use a makefile target to build all generated
+-->
+       <para>
+        Provide a makefile target to build all generated headers (Michael
+        Paquier, Tom Lane)
+       </para>
+
+       <para>
+        <literal>submake-generated-headers</> can now be invoked to ensure
+        that generated backend header files are up-to-date.  This is useful in
+        subdirectories that might be built <quote>standalone</>.
+       </para>
+      </listitem>
+
      </itemizedlist>
 
    </sect3>
@@ -3100,6 +3173,7 @@ This commit is also listed under libpq and PL/pgSQL
       <listitem>
 <!--
 2016-03-16 [5871b8848] GUC variable pg_trgm.similarity_threshold insead of set_
+2016-06-20 [9c852566a] Fix comparison of similarity to threshold in GIST trigra
 -->
        <para>
         Add configuration parameter <varname>pg_trgm.similarity_threshold</>
@@ -3137,6 +3211,7 @@ This commit is also listed under libpq and PL/pgSQL
       <listitem>
 <!--
 2016-03-08 [ba0a198fb] Add pg_visibility contrib module.
+2016-06-17 [71d05a2c7] pg_visibility: Add pg_truncate_visibility_map function.
 -->
        <para>
         Add <filename>contrib/pg_visibility</> module to allow examining
@@ -3268,6 +3343,7 @@ This commit is also listed under libpq and PL/pgSQL
       <listitem>
 <!--
 2016-04-21 [f039eaac7] Allow queries submitted by postgres_fdw to be canceled.
+2016-05-16 [1b812afb0] Fix multiple problems in postgres_fdw query cancellation
 -->
        <para>
         Transmit query cancellation requests to the remote server

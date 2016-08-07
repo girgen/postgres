@@ -464,12 +464,6 @@
       <entry>Data type of the aggregate function's internal transition (state) data</entry>
      </row>
      <row>
-      <entry><structfield>aggserialtype</structfield></entry>
-      <entry><type>oid</type></entry>
-      <entry><literal><link linkend="catalog-pg-type"><structname>pg_type</structname></link>.oid</literal></entry>
-      <entry>Return data type of the aggregate function's serialization function (zero if none)</entry>
-     </row>
-     <row>
       <entry><structfield>aggtransspace</structfield></entry>
       <entry><type>int4</type></entry>
       <entry></entry>
@@ -3819,7 +3813,7 @@
   </para>
 
   <table>
-   <title><structname>pg_inherits</> Columns</title>
+   <title><structname>pg_init_privs</> Columns</title>
 
    <tgroup cols="4">
     <thead>
@@ -8502,7 +8496,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
       <entry><type>boolean</type></entry>
       <entry>
        <literal>true</literal> if the prepared statement was created
-       via the <command>PREPARE</command> SQL statement;
+       via the <command>PREPARE</command> SQL command;
        <literal>false</literal> if the statement was prepared via the
        frontend/backend protocol
       </entry>
@@ -8916,6 +8910,16 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
       <entry></entry>
       <entry>Password expiry time (only used for password authentication);
        null if no expiration</entry>
+     </row>
+
+     <row>
+      <entry><structfield>rolbypassrls</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       Role bypasses every row level security policy, see
+       <xref linkend="ddl-rowsecurity"> for more information.
+      </entry>
      </row>
 
      <row>
@@ -9800,8 +9804,8 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    of time zone names that are recognized by <command>SET TIMEZONE</>,
    along with their associated abbreviations, UTC offsets,
    and daylight-savings status.  (Technically,
-   <productname>PostgreSQL</productname> uses <acronym>UT1</> rather
-   than UTC because leap seconds are not handled.)
+   <productname>PostgreSQL</productname> does not use UTC because leap
+   seconds are not handled.)
    Unlike the abbreviations shown in <link
    linkend="view-pg-timezone-abbrevs"><structname>pg_timezone_abbrevs</structname></link>, many of these names imply a set of daylight-savings transition
    date rules.  Therefore, the associated information changes across local DST

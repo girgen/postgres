@@ -58,8 +58,8 @@ extern bool is_projection_capable_plan(Plan *plan);
 
 /* External use of these functions is deprecated: */
 extern Sort *make_sort_from_sortclauses(List *sortcls, Plan *lefttree);
-extern Agg *make_agg(List *tlist, List *qual, AggStrategy aggstrategy,
-		 bool combineStates, bool finalizeAggs, bool serialStates,
+extern Agg *make_agg(List *tlist, List *qual,
+		 AggStrategy aggstrategy, AggSplit aggsplit,
 		 int numGroupCols, AttrNumber *grpColIdx, Oid *grpOperators,
 		 List *groupingSets, List *chain,
 		 double dNumGroups, Plan *lefttree);
@@ -95,6 +95,7 @@ extern RestrictInfo *build_implied_join_equality(Oid opno,
 							Expr *item2,
 							Relids qualscope,
 							Relids nullable_relids);
+extern void match_foreign_keys_to_quals(PlannerInfo *root);
 
 /*
  * prototypes for plan/analyzejoins.c

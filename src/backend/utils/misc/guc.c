@@ -1947,7 +1947,7 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"temp_file_limit", PGC_SUSET, RESOURCES_DISK,
-			gettext_noop("Limits the total size of all temporary files used by each session."),
+			gettext_noop("Limits the total size of all temporary files used by each process."),
 			gettext_noop("-1 means no limit."),
 			GUC_UNIT_KB
 		},
@@ -2469,7 +2469,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL,
 		},
 		&max_worker_processes,
-		8, 1, MAX_BACKENDS,
+		8, 0, MAX_BACKENDS,
 		check_max_worker_processes, NULL, NULL
 	},
 
@@ -2744,6 +2744,17 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&effective_cache_size,
 		DEFAULT_EFFECTIVE_CACHE_SIZE, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"min_parallel_relation_size", PGC_USERSET, QUERY_TUNING_COST,
+			gettext_noop("Sets the minimum size of relations to be considered for parallel scan."),
+			NULL,
+			GUC_UNIT_BLOCKS,
+		},
+		&min_parallel_relation_size,
+		1024, 0, INT_MAX / 3,
 		NULL, NULL, NULL
 	},
 

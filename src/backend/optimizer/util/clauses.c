@@ -52,19 +52,13 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-typedef struct
-{
-	PartialAggType allowedtype;
-} partial_agg_context;
 
 typedef struct
 {
 	PlannerInfo *root;
+	AggSplit	aggsplit;
 	AggClauseCosts *costs;
-	bool		finalizeAggs;
-	bool		combineStates;
-	bool		serialStates;
-} count_agg_clauses_context;
+} get_agg_clause_costs_context;
 
 typedef struct
 {
@@ -100,11 +94,9 @@ typedef struct
 	bool		allow_restricted;
 } has_parallel_hazard_arg;
 
-static bool aggregates_allow_partial_walker(Node *node,
-								partial_agg_context *context);
 static bool contain_agg_clause_walker(Node *node, void *context);
-static bool count_agg_clauses_walker(Node *node,
-						 count_agg_clauses_context *context);
+static bool get_agg_clause_costs_walker(Node *node,
+							get_agg_clause_costs_context *context);
 static bool find_window_functions_walker(Node *node, WindowFuncLists *lists);
 static bool expression_returns_set_rows_walker(Node *node, double *count);
 static bool contain_subplans_walker(Node *node, void *context);
@@ -406,83 +398,6 @@ make_ands_implicit(Expr *clause)
  *****************************************************************************/
 
 /*
- * aggregates_allow_partial
- *		Recursively search for Aggref clauses and determine the maximum
- *		level of partial aggregation which can be supported.
- */
-PartialAggType
-aggregates_allow_partial(Node *clause)
-{
-	partial_agg_context context;
-
-	/* initially any type is okay, until we find Aggrefs which say otherwise */
-	context.allowedtype = PAT_ANY;
-
-	if (!aggregates_allow_partial_walker(clause, &context))
-		return context.allowedtype;
-	return context.allowedtype;
-}
-
-static bool
-aggregates_allow_partial_walker(Node *node, partial_agg_context *context)
-{
-	if (node == NULL)
-		return false;
-	if (IsA(node, Aggref))
-	{
-		Aggref	   *aggref = (Aggref *) node;
-		HeapTuple	aggTuple;
-		Form_pg_aggregate aggform;
-
-		Assert(aggref->agglevelsup == 0);
-
-		/*
-		 * We can't perform partial aggregation with Aggrefs containing a
-		 * DISTINCT or ORDER BY clause.
-		 */
-		if (aggref->aggdistinct || aggref->aggorder)
-		{
-			context->allowedtype = PAT_DISABLED;
-			return true;		/* abort search */
-		}
-		aggTuple = SearchSysCache1(AGGFNOID,
-								   ObjectIdGetDatum(aggref->aggfnoid));
-		if (!HeapTupleIsValid(aggTuple))
-			elog(ERROR, "cache lookup failed for aggregate %u",
-				 aggref->aggfnoid);
-		aggform = (Form_pg_aggregate) GETSTRUCT(aggTuple);
-
-		/*
-		 * If there is no combine function, then partial aggregation is not
-		 * possible.
-		 */
-		if (!OidIsValid(aggform->aggcombinefn))
-		{
-			ReleaseSysCache(aggTuple);
-			context->allowedtype = PAT_DISABLED;
-			return true;		/* abort search */
-		}
-
-		/*
-		 * If we find any aggs with an internal transtype then we must check
-		 * that these have a serialization type, serialization func and
-		 * deserialization func; otherwise, we set the maximum allowed type to
-		 * PAT_INTERNAL_ONLY.
-		 */
-		if (aggform->aggtranstype == INTERNALOID &&
-			(!OidIsValid(aggform->aggserialtype) ||
-			 !OidIsValid(aggform->aggserialfn) ||
-			 !OidIsValid(aggform->aggdeserialfn)))
-			context->allowedtype = PAT_INTERNAL_ONLY;
-
-		ReleaseSysCache(aggTuple);
-		return false;			/* continue searching */
-	}
-	return expression_tree_walker(node, aggregates_allow_partial_walker,
-								  (void *) context);
-}
-
-/*
  * contain_agg_clause
  *	  Recursively search for Aggref/GroupingFunc nodes within a clause.
  *
@@ -521,40 +436,44 @@ contain_agg_clause_walker(Node *node, void *context)
 }
 
 /*
- * count_agg_clauses
- *	  Recursively count the Aggref nodes in an expression tree, and
- *	  accumulate other cost information about them too.
+ * get_agg_clause_costs
+ *	  Recursively find the Aggref nodes in an expression tree, and
+ *	  accumulate cost information about them.
  *
- *	  Note: this also checks for nested aggregates, which are an error.
- *
- * We not only count the nodes, but estimate their execution costs, and
- * attempt to estimate the total space needed for their transition state
- * values if all are evaluated in parallel (as would be done in a HashAgg
- * plan).  See AggClauseCosts for the exact set of statistics collected.
+ * 'aggsplit' tells us the expected partial-aggregation mode, which affects
+ * the cost estimates.
  *
  * NOTE that the counts/costs are ADDED to those already in *costs ... so
  * the caller is responsible for zeroing the struct initially.
+ *
+ * We count the nodes, estimate their execution costs, and estimate the total
+ * space needed for their transition state values if all are evaluated in
+ * parallel (as would be done in a HashAgg plan).  Also, we check whether
+ * partial aggregation is feasible.  See AggClauseCosts for the exact set
+ * of statistics collected.
+ *
+ * In addition, we mark Aggref nodes with the correct aggtranstype, so
+ * that that doesn't need to be done repeatedly.  (That makes this function's
+ * name a bit of a misnomer.)
  *
  * This does not descend into subqueries, and so should be used only after
  * reduction of sublinks to subplans, or in contexts where it's known there
  * are no subqueries.  There mustn't be outer-aggregate references either.
  */
 void
-count_agg_clauses(PlannerInfo *root, Node *clause, AggClauseCosts *costs,
-				  bool finalizeAggs, bool combineStates, bool serialStates)
+get_agg_clause_costs(PlannerInfo *root, Node *clause, AggSplit aggsplit,
+					 AggClauseCosts *costs)
 {
-	count_agg_clauses_context context;
+	get_agg_clause_costs_context context;
 
 	context.root = root;
+	context.aggsplit = aggsplit;
 	context.costs = costs;
-	context.finalizeAggs = finalizeAggs;
-	context.combineStates = combineStates;
-	context.serialStates = serialStates;
-	(void) count_agg_clauses_walker(clause, &context);
+	(void) get_agg_clause_costs_walker(clause, &context);
 }
 
 static bool
-count_agg_clauses_walker(Node *node, count_agg_clauses_context *context)
+get_agg_clause_costs_walker(Node *node, get_agg_clause_costs_context *context)
 {
 	if (node == NULL)
 		return false;
@@ -572,8 +491,6 @@ count_agg_clauses_walker(Node *node, count_agg_clauses_context *context)
 		Oid			aggtranstype;
 		int32		aggtransspace;
 		QualCost	argcosts;
-		Oid			inputTypes[FUNC_MAX_ARGS];
-		int			numArguments;
 
 		Assert(aggref->agglevelsup == 0);
 
@@ -597,43 +514,89 @@ count_agg_clauses_walker(Node *node, count_agg_clauses_context *context)
 		aggtransspace = aggform->aggtransspace;
 		ReleaseSysCache(aggTuple);
 
-		/* count it; note ordered-set aggs always have nonempty aggorder */
+		/*
+		 * Resolve the possibly-polymorphic aggregate transition type, unless
+		 * already done in a previous pass over the expression.
+		 */
+		if (OidIsValid(aggref->aggtranstype))
+			aggtranstype = aggref->aggtranstype;
+		else
+		{
+			Oid			inputTypes[FUNC_MAX_ARGS];
+			int			numArguments;
+
+			/* extract argument types (ignoring any ORDER BY expressions) */
+			numArguments = get_aggregate_argtypes(aggref, inputTypes);
+
+			/* resolve actual type of transition state, if polymorphic */
+			aggtranstype = resolve_aggregate_transtype(aggref->aggfnoid,
+													   aggtranstype,
+													   inputTypes,
+													   numArguments);
+			aggref->aggtranstype = aggtranstype;
+		}
+
+		/*
+		 * Count it, and check for cases requiring ordered input.  Note that
+		 * ordered-set aggs always have nonempty aggorder.  Any ordered-input
+		 * case also defeats partial aggregation.
+		 */
 		costs->numAggs++;
 		if (aggref->aggorder != NIL || aggref->aggdistinct != NIL)
+		{
 			costs->numOrderedAggs++;
+			costs->hasNonPartial = true;
+		}
+
+		/*
+		 * Check whether partial aggregation is feasible, unless we already
+		 * found out that we can't do it.
+		 */
+		if (!costs->hasNonPartial)
+		{
+			/*
+			 * If there is no combine function, then partial aggregation is
+			 * not possible.
+			 */
+			if (!OidIsValid(aggcombinefn))
+				costs->hasNonPartial = true;
+
+			/*
+			 * If we have any aggs with transtype INTERNAL then we must check
+			 * whether they have serialization/deserialization functions; if
+			 * not, we can't serialize partial-aggregation results.
+			 */
+			else if (aggtranstype == INTERNALOID &&
+					 (!OidIsValid(aggserialfn) || !OidIsValid(aggdeserialfn)))
+				costs->hasNonSerial = true;
+		}
 
 		/*
 		 * Add the appropriate component function execution costs to
 		 * appropriate totals.
 		 */
-		if (context->combineStates)
+		if (DO_AGGSPLIT_COMBINE(context->aggsplit))
 		{
 			/* charge for combining previously aggregated states */
 			costs->transCost.per_tuple += get_func_cost(aggcombinefn) * cpu_operator_cost;
-
-			/* charge for deserialization, when appropriate */
-			if (context->serialStates && OidIsValid(aggdeserialfn))
-				costs->transCost.per_tuple += get_func_cost(aggdeserialfn) * cpu_operator_cost;
 		}
 		else
 			costs->transCost.per_tuple += get_func_cost(aggtransfn) * cpu_operator_cost;
-
-		if (context->finalizeAggs)
-		{
-			if (OidIsValid(aggfinalfn))
-				costs->finalCost += get_func_cost(aggfinalfn) * cpu_operator_cost;
-		}
-		else if (context->serialStates)
-		{
-			if (OidIsValid(aggserialfn))
-				costs->finalCost += get_func_cost(aggserialfn) * cpu_operator_cost;
-		}
+		if (DO_AGGSPLIT_DESERIALIZE(context->aggsplit) &&
+			OidIsValid(aggdeserialfn))
+			costs->transCost.per_tuple += get_func_cost(aggdeserialfn) * cpu_operator_cost;
+		if (DO_AGGSPLIT_SERIALIZE(context->aggsplit) &&
+			OidIsValid(aggserialfn))
+			costs->finalCost += get_func_cost(aggserialfn) * cpu_operator_cost;
+		if (!DO_AGGSPLIT_SKIPFINAL(context->aggsplit) &&
+			OidIsValid(aggfinalfn))
+			costs->finalCost += get_func_cost(aggfinalfn) * cpu_operator_cost;
 
 		/*
-		 * Some costs will already have been incurred by the initial aggregate
-		 * node, so we mustn't include these again.
+		 * These costs are incurred only by the initial aggregate node, so we
+		 * mustn't include them again at upper levels.
 		 */
-		if (!context->combineStates)
+		if (!DO_AGGSPLIT_COMBINE(context->aggsplit))
 		{
 			/* add the input expressions' cost to per-input-row costs */
 			cost_qual_eval_node(&argcosts, (Node *) aggref->args, context->root);
@@ -668,15 +631,6 @@ count_agg_clauses_walker(Node *node, count_agg_clauses_context *context)
 			costs->finalCost += argcosts.per_tuple;
 		}
 
-		/* extract argument types (ignoring any ORDER BY expressions) */
-		numArguments = get_aggregate_argtypes(aggref, inputTypes);
-
-		/* resolve actual type of transition state, if polymorphic */
-		aggtranstype = resolve_aggregate_transtype(aggref->aggfnoid,
-												   aggtranstype,
-												   inputTypes,
-												   numArguments);
-
 		/*
 		 * If the transition type is pass-by-value then it doesn't add
 		 * anything to the required size of the hashtable.  If it is
@@ -698,14 +652,15 @@ count_agg_clauses_walker(Node *node, count_agg_clauses_context *context)
 				 * This works for cases like MAX/MIN and is probably somewhat
 				 * reasonable otherwise.
 				 */
-				int			numdirectargs = list_length(aggref->aggdirectargs);
-				int32		aggtranstypmod;
+				int32		aggtranstypmod = -1;
 
-				if (numArguments > numdirectargs &&
-					aggtranstype == inputTypes[numdirectargs])
-					aggtranstypmod = exprTypmod((Node *) linitial(aggref->args));
-				else
-					aggtranstypmod = -1;
+				if (aggref->args)
+				{
+					TargetEntry *tle = (TargetEntry *) linitial(aggref->args);
+
+					if (aggtranstype == exprType((Node *) tle->expr))
+						aggtranstypmod = exprTypmod((Node *) tle->expr);
+				}
 
 				avgwidth = get_typavgwidth(aggtranstype, aggtranstypmod);
 			}
@@ -733,14 +688,12 @@ count_agg_clauses_walker(Node *node, count_agg_clauses_context *context)
 		/*
 		 * We assume that the parser checked that there are no aggregates (of
 		 * this level anyway) in the aggregated arguments, direct arguments,
-		 * or filter clause.  Hence, we need not recurse into any of them. (If
-		 * either the parser or the planner screws up on this point, the
-		 * executor will still catch it; see ExecInitExpr.)
+		 * or filter clause.  Hence, we need not recurse into any of them.
 		 */
 		return false;
 	}
 	Assert(!IsA(node, SubLink));
-	return expression_tree_walker(node, count_agg_clauses_walker,
+	return expression_tree_walker(node, get_agg_clause_costs_walker,
 								  (void *) context);
 }
 
@@ -3320,7 +3273,7 @@ eval_const_expressions_mutator(Node *node,
 
 				arg = eval_const_expressions_mutator((Node *) ntest->arg,
 													 context);
-				if (arg && IsA(arg, RowExpr))
+				if (ntest->argisrow && arg && IsA(arg, RowExpr))
 				{
 					/*
 					 * We break ROW(...) IS [NOT] NULL into separate tests on
@@ -3331,8 +3284,6 @@ eval_const_expressions_mutator(Node *node,
 					RowExpr    *rarg = (RowExpr *) arg;
 					List	   *newargs = NIL;
 					ListCell   *l;
-
-					Assert(ntest->argisrow);
 
 					foreach(l, rarg->args)
 					{
@@ -3352,10 +3303,17 @@ eval_const_expressions_mutator(Node *node,
 								return makeBoolConst(false, false);
 							continue;
 						}
+
+						/*
+						 * Else, make a scalar (argisrow == false) NullTest
+						 * for this field.  Scalar semantics are required
+						 * because IS [NOT] NULL doesn't recurse; see comments
+						 * in ExecEvalNullTest().
+						 */
 						newntest = makeNode(NullTest);
 						newntest->arg = (Expr *) relem;
 						newntest->nulltesttype = ntest->nulltesttype;
-						newntest->argisrow = type_is_rowtype(exprType(relem));
+						newntest->argisrow = false;
 						newntest->location = ntest->location;
 						newargs = lappend(newargs, newntest);
 					}

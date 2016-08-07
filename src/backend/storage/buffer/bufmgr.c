@@ -3352,7 +3352,7 @@ IncrBufferRefCount(Buffer buffer)
  * This is essentially the same as MarkBufferDirty, except:
  *
  * 1. The caller does not write WAL; so if checksums are enabled, we may need
- *	  to write an XLOG_HINT WAL record to protect against torn pages.
+ *	  to write an XLOG_FPI WAL record to protect against torn pages.
  * 2. The caller might have only share-lock instead of exclusive-lock on the
  *	  buffer's content lock.
  * 3. This function does not guarantee that the buffer is always marked dirty
@@ -4160,12 +4160,10 @@ ts_ckpt_progress_comparator(Datum a, Datum b, void *arg)
 /*
  * Initialize a writeback context, discarding potential previous state.
  *
- * *max_coalesce is a pointer to a variable containing the current maximum
- * number of writeback requests that will be coalesced into a bigger one. A
- * value <= 0 means that no writeback control will be performed. max_pending
- * is a pointer instead of an immediate value, so the coalesce limits can
- * easily changed by the GUC mechanism, and so calling code does not have to
- * check the current configuration.
+ * *max_pending is a pointer instead of an immediate value, so the coalesce
+ * limits can easily changed by the GUC mechanism, and so calling code does
+ * not have to check the current configuration. A value is 0 means that no
+ * writeback control will be performed.
  */
 void
 WritebackContextInit(WritebackContext *context, int *max_pending)

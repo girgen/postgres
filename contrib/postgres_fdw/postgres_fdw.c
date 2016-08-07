@@ -67,8 +67,6 @@ enum FdwScanPrivateIndex
 	FdwScanPrivateRetrievedAttrs,
 	/* Integer representing the desired fetch_size */
 	FdwScanPrivateFetchSize,
-	/* Oid of user mapping to be used while connecting to the foreign server */
-	FdwScanPrivateUserMappingOid,
 
 	/*
 	 * String describing join i.e. names of relations being joined and types
@@ -1226,11 +1224,10 @@ postgresGetForeignPlan(PlannerInfo *root,
 	 * Build the fdw_private list that will be available to the executor.
 	 * Items in the list must match order in enum FdwScanPrivateIndex.
 	 */
-	fdw_private = list_make5(makeString(sql.data),
+	fdw_private = list_make4(makeString(sql.data),
 							 remote_conds,
 							 retrieved_attrs,
-							 makeInteger(fpinfo->fetch_size),
-							 makeInteger(foreignrel->umid));
+							 makeInteger(fpinfo->fetch_size));
 	if (foreignrel->reloptkind == RELOPT_JOINREL)
 		fdw_private = lappend(fdw_private,
 							  makeString(fpinfo->relation_name->data));
@@ -1262,7 +1259,11 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 	ForeignScan *fsplan = (ForeignScan *) node->ss.ps.plan;
 	EState	   *estate = node->ss.ps.state;
 	PgFdwScanState *fsstate;
+	RangeTblEntry *rte;
+	Oid			userid;
+	ForeignTable *table;
 	UserMapping *user;
+	int			rtindex;
 	int			numParams;
 
 	/*
@@ -1278,36 +1279,20 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 	node->fdw_state = (void *) fsstate;
 
 	/*
-	 * Obtain the foreign server where to connect and user mapping to use for
-	 * connection. For base relations we obtain this information from
-	 * catalogs. For join relations, this information is frozen at the time of
-	 * planning to ensure that the join is safe to pushdown. In case the
-	 * information goes stale between planning and execution, plan will be
-	 * invalidated and replanned.
+	 * Identify which user to do the remote access as.  This should match what
+	 * ExecCheckRTEPerms() does.  In case of a join, use the lowest-numbered
+	 * member RTE as a representative; we would get the same result from any.
 	 */
 	if (fsplan->scan.scanrelid > 0)
-	{
-		ForeignTable *table;
-
-		/*
-		 * Identify which user to do the remote access as.  This should match
-		 * what ExecCheckRTEPerms() does.
-		 */
-		RangeTblEntry *rte = rt_fetch(fsplan->scan.scanrelid, estate->es_range_table);
-		Oid			userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
-
-		fsstate->rel = node->ss.ss_currentRelation;
-		table = GetForeignTable(RelationGetRelid(fsstate->rel));
-
-		user = GetUserMapping(userid, table->serverid);
-	}
+		rtindex = fsplan->scan.scanrelid;
 	else
-	{
-		Oid			umid = intVal(list_nth(fsplan->fdw_private, FdwScanPrivateUserMappingOid));
+		rtindex = bms_next_member(fsplan->fs_relids, -1);
+	rte = rt_fetch(rtindex, estate->es_range_table);
+	userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
 
-		user = GetUserMappingById(umid);
-		Assert(fsplan->fs_server == user->serverid);
-	}
+	/* Get info about foreign table. */
+	table = GetForeignTable(rte->relid);
+	user = GetUserMapping(userid, table->serverid);
 
 	/*
 	 * Get connection to the foreign server.  Connection manager will
@@ -1344,9 +1329,15 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 	 * into local representation and error reporting during that process.
 	 */
 	if (fsplan->scan.scanrelid > 0)
+	{
+		fsstate->rel = node->ss.ss_currentRelation;
 		fsstate->tupdesc = RelationGetDescr(fsstate->rel);
+	}
 	else
+	{
+		fsstate->rel = NULL;
 		fsstate->tupdesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+	}
 
 	fsstate->attinmeta = TupleDescGetAttInMetadata(fsstate->tupdesc);
 
@@ -3966,16 +3957,6 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	List	   *otherclauses;
 
 	/*
-	 * Core code may call GetForeignJoinPaths hook even when the join relation
-	 * doesn't have a valid user mapping associated with it. See
-	 * build_join_rel() for details. We can't push down such join, since there
-	 * doesn't exist a user mapping which can be used to connect to the
-	 * foreign server.
-	 */
-	if (!OidIsValid(joinrel->umid))
-		return false;
-
-	/*
 	 * We support pushing down INNER, LEFT, RIGHT and FULL OUTER joins.
 	 * Constructing queries representing SEMI and ANTI joins is hard, hence
 	 * not considered right now.
@@ -4151,6 +4132,20 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	fpinfo->use_remote_estimate = fpinfo_o->use_remote_estimate ||
 		fpinfo_i->use_remote_estimate;
 
+	/* Get user mapping */
+	if (fpinfo->use_remote_estimate)
+	{
+		if (fpinfo_o->use_remote_estimate)
+			fpinfo->user = fpinfo_o->user;
+		else
+			fpinfo->user = fpinfo_i->user;
+	}
+	else
+		fpinfo->user = NULL;
+
+	/* Get foreign server */
+	fpinfo->server = fpinfo_o->server;
+
 	/*
 	 * Since both the joining relations come from the same server, the server
 	 * level options should have same value for both the relations. Pick from
@@ -4264,16 +4259,15 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 	fpinfo->attrs_used = NULL;
 
 	/*
-	 * In case there is a possibility that EvalPlanQual will be executed, we
-	 * should be able to reconstruct the row, from base relations applying all
-	 * the conditions. We create a local plan from a suitable local path
-	 * available in the path list. In case such a path doesn't exist, we can
-	 * not push the join to the foreign server since we won't be able to
+	 * If there is a possibility that EvalPlanQual will be executed, we need
+	 * to be able to reconstruct the row using scans of the base relations.
+	 * GetExistingLocalJoinPath will find a suitable path for this purpose in
+	 * the path list of the joinrel, if one exists.  We must be careful to
+	 * call it before adding any ForeignPath, since the ForeignPath might
+	 * dominate the only suitable local path available.  We also do it before
 	 * reconstruct the row for EvalPlanQual(). Find an alternative local path
-	 * before we add ForeignPath, lest the new path would kick possibly the
-	 * only local path. Do this before calling foreign_join_ok(), since that
-	 * function updates fpinfo and marks it as pushable if the join is found
-	 * to be pushable.
+	 * calling foreign_join_ok(), since that function updates fpinfo and marks
+	 * it as pushable if the join is found to be pushable.
 	 */
 	if (root->parse->commandType == CMD_DELETE ||
 		root->parse->commandType == CMD_UPDATE ||
@@ -4313,25 +4307,13 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 	cost_qual_eval(&fpinfo->local_conds_cost, fpinfo->local_conds, root);
 
 	/*
-	 * If we are going to estimate the costs using EXPLAIN, we will need
-	 * connection information. Fill it here.
+	 * If we are going to estimate costs locally, estimate the join clause
+	 * selectivity here while we have special join info.
 	 */
-	if (fpinfo->use_remote_estimate)
-		fpinfo->user = GetUserMappingById(joinrel->umid);
-	else
-	{
-		fpinfo->user = NULL;
-
-		/*
-		 * If we are going to estimate costs locally, estimate the join clause
-		 * selectivity here while we have special join info.
-		 */
+	if (!fpinfo->use_remote_estimate)
 		fpinfo->joinclause_sel = clauselist_selectivity(root, fpinfo->joinclauses,
 														0, fpinfo->jointype,
 														extra->sjinfo);
-
-	}
-	fpinfo->server = GetForeignServer(joinrel->serverid);
 
 	/* Estimate costs for bare join relation */
 	estimate_path_cost_size(root, joinrel, NIL, NIL, &rows,
@@ -4529,6 +4511,7 @@ conversion_error_callback(void *arg)
 {
 	const char *attname = NULL;
 	const char *relname = NULL;
+	bool		is_wholerow = false;
 	ConversionLocation *errpos = (ConversionLocation *) arg;
 
 	if (errpos->rel)
@@ -4561,12 +4544,22 @@ conversion_error_callback(void *arg)
 		Assert(IsA(var, Var));
 
 		rte = rt_fetch(var->varno, estate->es_range_table);
+
+		if (var->varattno == 0)
+			is_wholerow = true;
+		else
+			attname = get_relid_attribute_name(rte->relid, var->varattno);
+
 		relname = get_rel_name(rte->relid);
-		attname = get_relid_attribute_name(rte->relid, var->varattno);
 	}
 
-	if (attname && relname)
-		errcontext("column \"%s\" of foreign table \"%s\"", attname, relname);
+	if (relname)
+	{
+		if (is_wholerow)
+			errcontext("whole-row reference to foreign table \"%s\"", relname);
+		else if (attname)
+			errcontext("column \"%s\" of foreign table \"%s\"", attname, relname);
+	}
 }
 
 /*

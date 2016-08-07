@@ -565,8 +565,9 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
  *	  convert a QueryDesc's plan tree to text and append it to es->str
  *
  * The caller should have set up the options fields of *es, as well as
- * initializing the output buffer es->str.  Other fields in *es are
- * initialized here.
+ * initializing the output buffer es->str.  Also, output formatting state
+ * such as the indent level is assumed valid.  Plan-tree-specific fields
+ * in *es are initialized here.
  *
  * NB: will not work on utility statements
  */
@@ -576,6 +577,7 @@ ExplainPrintPlan(ExplainState *es, QueryDesc *queryDesc)
 	Bitmapset  *rels_used = NULL;
 	PlanState  *ps;
 
+	/* Set up ExplainState fields associated with this plan tree */
 	Assert(queryDesc->plannedstmt != NULL);
 	es->pstmt = queryDesc->plannedstmt;
 	es->rtable = queryDesc->plannedstmt->rtable;
@@ -583,6 +585,7 @@ ExplainPrintPlan(ExplainState *es, QueryDesc *queryDesc)
 	es->rtable_names = select_rtable_names_for_explain(es->rtable, rels_used);
 	es->deparse_cxt = deparse_context_for_plan_rtable(es->rtable,
 													  es->rtable_names);
+	es->printed_subplans = NULL;
 
 	/*
 	 * Sometimes we mark a Gather node as "invisible", which means that it's
@@ -807,6 +810,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	const char *pname;			/* node type name for text output */
 	const char *sname;			/* node type name for non-text output */
 	const char *strategy = NULL;
+	const char *partialmode = NULL;
 	const char *operation = NULL;
 	const char *custom_name = NULL;
 	int			save_indent = es->indent;
@@ -943,15 +947,10 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			pname = sname = "Group";
 			break;
 		case T_Agg:
-			sname = "Aggregate";
 			{
 				Agg		   *agg = (Agg *) plan;
 
-				if (agg->finalizeAggs == false)
-					operation = "Partial";
-				else if (agg->combineStates == true)
-					operation = "Finalize";
-
+				sname = "Aggregate";
 				switch (agg->aggstrategy)
 				{
 					case AGG_PLAIN:
@@ -972,8 +971,18 @@ ExplainNode(PlanState *planstate, List *ancestors,
 						break;
 				}
 
-				if (operation != NULL)
-					pname = psprintf("%s %s", operation, pname);
+				if (DO_AGGSPLIT_SKIPFINAL(agg->aggsplit))
+				{
+					partialmode = "Partial";
+					pname = psprintf("%s %s", partialmode, pname);
+				}
+				else if (DO_AGGSPLIT_COMBINE(agg->aggsplit))
+				{
+					partialmode = "Finalize";
+					pname = psprintf("%s %s", partialmode, pname);
+				}
+				else
+					partialmode = "Simple";
 			}
 			break;
 		case T_WindowAgg:
@@ -1042,6 +1051,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		ExplainPropertyText("Node Type", sname, es);
 		if (strategy)
 			ExplainPropertyText("Strategy", strategy, es);
+		if (partialmode)
+			ExplainPropertyText("Partial Mode", partialmode, es);
 		if (operation)
 			ExplainPropertyText("Operation", operation, es);
 		if (relationship)
@@ -1050,8 +1061,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			ExplainPropertyText("Subplan Name", plan_name, es);
 		if (custom_name)
 			ExplainPropertyText("Custom Plan Provider", custom_name, es);
-		if (plan->parallel_aware)
-			ExplainPropertyText("Parallel Aware", "true", es);
+		ExplainPropertyBool("Parallel Aware", plan->parallel_aware, es);
 	}
 
 	switch (nodeTag(plan))
@@ -1349,10 +1359,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					ExplainPropertyInteger("Workers Launched",
 										   nworkers, es);
 				}
-				if (gather->single_copy)
-					ExplainPropertyText("Single Copy",
-									  gather->single_copy ? "true" : "false",
-										es);
+				if (gather->single_copy || es->format != EXPLAIN_FORMAT_TEXT)
+					ExplainPropertyBool("Single Copy", gather->single_copy, es);
 			}
 			break;
 		case T_FunctionScan:
@@ -2793,6 +2801,21 @@ ExplainSubPlans(List *plans, List *ancestors,
 		SubPlanState *sps = (SubPlanState *) lfirst(lst);
 		SubPlan    *sp = (SubPlan *) sps->xprstate.expr;
 
+		/*
+		 * There can be multiple SubPlan nodes referencing the same physical
+		 * subplan (same plan_id, which is its index in PlannedStmt.subplans).
+		 * We should print a subplan only once, so track which ones we already
+		 * printed.  This state must be global across the plan tree, since the
+		 * duplicate nodes could be in different plan nodes, eg both a bitmap
+		 * indexscan's indexqual and its parent heapscan's recheck qual.  (We
+		 * do not worry too much about which plan node we show the subplan as
+		 * attached to in such cases.)
+		 */
+		if (bms_is_member(sp->plan_id, es->printed_subplans))
+			continue;
+		es->printed_subplans = bms_add_member(es->printed_subplans,
+											  sp->plan_id);
+
 		ExplainNode(sps->planstate, ancestors,
 					relationship, sp->plan_name, es);
 	}
@@ -3029,6 +3052,15 @@ ExplainPropertyFloat(const char *qlabel, double value, int ndigits,
 
 	snprintf(buf, sizeof(buf), "%.*f", ndigits, value);
 	ExplainProperty(qlabel, buf, true, es);
+}
+
+/*
+ * Explain a bool-valued property.
+ */
+void
+ExplainPropertyBool(const char *qlabel, bool value, ExplainState *es)
+{
+	ExplainProperty(qlabel, value ? "true" : "false", true, es);
 }
 
 /*

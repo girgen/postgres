@@ -58,7 +58,7 @@ exprType(const Node *expr)
 			type = ((const Param *) expr)->paramtype;
 			break;
 		case T_Aggref:
-			type = ((const Aggref *) expr)->aggoutputtype;
+			type = ((const Aggref *) expr)->aggtype;
 			break;
 		case T_GroupingFunc:
 			type = INT4OID;
@@ -2451,6 +2451,8 @@ expression_tree_mutator(Node *node,
 				Aggref	   *newnode;
 
 				FLATCOPY(newnode, aggref, Aggref);
+				/* assume mutation doesn't change types of arguments */
+				newnode->aggargtypes = list_copy(aggref->aggargtypes);
 				MUTATE(newnode->aggdirectargs, aggref->aggdirectargs, List *);
 				MUTATE(newnode->args, aggref->args, List *);
 				MUTATE(newnode->aggorder, aggref->aggorder, List *);

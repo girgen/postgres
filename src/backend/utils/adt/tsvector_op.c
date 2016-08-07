@@ -317,7 +317,7 @@ tsvector_setweight_by_filter(PG_FUNCTION_ARGS)
 
 		if (nulls[i])
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 					 errmsg("lexeme array may not contain nulls")));
 
 		lex = VARDATA(dlexemes[i]);
@@ -416,21 +416,38 @@ tsvector_bsearch(const TSVector tsv, char *lexeme, int lexeme_len)
 	return -1;
 }
 
+/*
+ * qsort comparator functions
+ */
+
 static int
-compareint(const void *va, const void *vb)
+compare_int(const void *va, const void *vb)
 {
-	int32		a = *((const int32 *) va);
-	int32		b = *((const int32 *) vb);
+	int			a = *((const int *) va);
+	int			b = *((const int *) vb);
 
 	if (a == b)
 		return 0;
 	return (a > b) ? 1 : -1;
 }
 
+static int
+compare_text_lexemes(const void *va, const void *vb)
+{
+	Datum		a = *((const Datum *) va);
+	Datum		b = *((const Datum *) vb);
+	char	   *alex = VARDATA_ANY(a);
+	int			alex_len = VARSIZE_ANY_EXHDR(a);
+	char	   *blex = VARDATA_ANY(b);
+	int			blex_len = VARSIZE_ANY_EXHDR(b);
+
+	return tsCompareString(alex, alex_len, blex, blex_len, false);
+}
+
 /*
  * Internal routine to delete lexemes from TSVector by array of offsets.
  *
- * int *indices_to_delete -- array of lexeme offsets to delete
+ * int *indices_to_delete -- array of lexeme offsets to delete (modified here!)
  * int indices_count -- size of that array
  *
  * Returns new TSVector without given lexemes along with their positions
@@ -445,35 +462,51 @@ tsvector_delete_by_indices(TSVector tsv, int *indices_to_delete,
 			   *arrout;
 	char	   *data = STRPTR(tsv),
 			   *dataout;
-	int			i,
-				j,
-				k,
-				curoff;
+	int			i,				/* index in arrin */
+				j,				/* index in arrout */
+				k,				/* index in indices_to_delete */
+				curoff;			/* index in dataout area */
 
 	/*
-	 * Here we overestimates tsout size, since we don't know exact size
-	 * occupied by positions and weights. We will set exact size later after a
-	 * pass through TSVector.
+	 * Sort the filter array to simplify membership checks below.  Also, get
+	 * rid of any duplicate entries, so that we can assume that indices_count
+	 * is exactly equal to the number of lexemes that will be removed.
+	 */
+	if (indices_count > 1)
+	{
+		int			kp;
+
+		qsort(indices_to_delete, indices_count, sizeof(int), compare_int);
+		kp = 0;
+		for (k = 1; k < indices_count; k++)
+		{
+			if (indices_to_delete[k] != indices_to_delete[kp])
+				indices_to_delete[++kp] = indices_to_delete[k];
+		}
+		indices_count = ++kp;
+	}
+
+	/*
+	 * Here we overestimate tsout size, since we don't know how much space is
+	 * used by the deleted lexeme(s).  We will set exact size below.
 	 */
 	tsout = (TSVector) palloc0(VARSIZE(tsv));
-	arrout = ARRPTR(tsout);
+
+	/* This count must be correct because STRPTR(tsout) relies on it. */
 	tsout->size = tsv->size - indices_count;
 
-	/* Sort our filter array to simplify membership check later. */
-	if (indices_count > 1)
-		qsort(indices_to_delete, indices_count, sizeof(int), compareint);
-
 	/*
-	 * Copy tsv to tsout skipping lexemes that enlisted in indices_to_delete.
+	 * Copy tsv to tsout, skipping lexemes listed in indices_to_delete.
 	 */
-	curoff = 0;
+	arrout = ARRPTR(tsout);
 	dataout = STRPTR(tsout);
+	curoff = 0;
 	for (i = j = k = 0; i < tsv->size; i++)
 	{
 		/*
-		 * Here we should check whether current i is present in
-		 * indices_to_delete or not. Since indices_to_delete is already sorted
-		 * we can advance it index only when we have match.
+		 * If current i is present in indices_to_delete, skip this lexeme.
+		 * Since indices_to_delete is already sorted, we only need to check
+		 * the current (k'th) entry.
 		 */
 		if (k < indices_count && i == indices_to_delete[k])
 		{
@@ -481,7 +514,7 @@ tsvector_delete_by_indices(TSVector tsv, int *indices_to_delete,
 			continue;
 		}
 
-		/* Copy lexeme, it's positions and weights */
+		/* Copy lexeme and its positions and weights */
 		memcpy(dataout + curoff, data + arrin[i].pos, arrin[i].len);
 		arrout[j].haspos = arrin[i].haspos;
 		arrout[j].len = arrin[i].len;
@@ -489,8 +522,8 @@ tsvector_delete_by_indices(TSVector tsv, int *indices_to_delete,
 		curoff += arrin[i].len;
 		if (arrin[i].haspos)
 		{
-			int			len = POSDATALEN(tsv, arrin + i) * sizeof(WordEntryPos) +
-			sizeof(uint16);
+			int			len = POSDATALEN(tsv, arrin + i) * sizeof(WordEntryPos)
+			+ sizeof(uint16);
 
 			curoff = SHORTALIGN(curoff);
 			memcpy(dataout + curoff,
@@ -503,10 +536,9 @@ tsvector_delete_by_indices(TSVector tsv, int *indices_to_delete,
 	}
 
 	/*
-	 * After the pass through TSVector k should equals exactly to
-	 * indices_count. If it isn't then the caller provided us with indices
-	 * outside of [0, tsv->size) range and estimation of tsout's size is
-	 * wrong.
+	 * k should now be exactly equal to indices_count. If it isn't then the
+	 * caller provided us with indices outside of [0, tsv->size) range and
+	 * estimation of tsout's size is wrong.
 	 */
 	Assert(k == indices_count);
 
@@ -560,7 +592,7 @@ tsvector_delete_arr(PG_FUNCTION_ARGS)
 
 	/*
 	 * In typical use case array of lexemes to delete is relatively small. So
-	 * here we optimizing things for that scenario: iterate through lexarr
+	 * here we optimize things for that scenario: iterate through lexarr
 	 * performing binary search of each lexeme from lexarr in tsvector.
 	 */
 	skip_indices = palloc0(nlex * sizeof(int));
@@ -572,10 +604,10 @@ tsvector_delete_arr(PG_FUNCTION_ARGS)
 
 		if (nulls[i])
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 					 errmsg("lexeme array may not contain nulls")));
 
-		lex = VARDATA(dlexemes[i]);
+		lex = VARDATA_ANY(dlexemes[i]);
 		lex_len = VARSIZE_ANY_EXHDR(dlexemes[i]);
 		lex_pos = tsvector_bsearch(tsin, lex, lex_len);
 
@@ -728,32 +760,50 @@ array_to_tsvector(PG_FUNCTION_ARGS)
 	bool	   *nulls;
 	int			nitems,
 				i,
+				j,
 				tslen,
 				datalen = 0;
 	char	   *cur;
 
 	deconstruct_array(v, TEXTOID, -1, false, 'i', &dlexemes, &nulls, &nitems);
 
+	/* Reject nulls (maybe we should just ignore them, instead?) */
 	for (i = 0; i < nitems; i++)
 	{
 		if (nulls[i])
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 					 errmsg("lexeme array may not contain nulls")));
-
-		datalen += VARSIZE_ANY_EXHDR(dlexemes[i]);
 	}
 
+	/* Sort and de-dup, because this is required for a valid tsvector. */
+	if (nitems > 1)
+	{
+		qsort(dlexemes, nitems, sizeof(Datum), compare_text_lexemes);
+		j = 0;
+		for (i = 1; i < nitems; i++)
+		{
+			if (compare_text_lexemes(&dlexemes[j], &dlexemes[i]) < 0)
+				dlexemes[++j] = dlexemes[i];
+		}
+		nitems = ++j;
+	}
+
+	/* Calculate space needed for surviving lexemes. */
+	for (i = 0; i < nitems; i++)
+		datalen += VARSIZE_ANY_EXHDR(dlexemes[i]);
 	tslen = CALCDATASIZE(nitems, datalen);
+
+	/* Allocate and fill tsvector. */
 	tsout = (TSVector) palloc0(tslen);
 	SET_VARSIZE(tsout, tslen);
 	tsout->size = nitems;
+
 	arrout = ARRPTR(tsout);
 	cur = STRPTR(tsout);
-
 	for (i = 0; i < nitems; i++)
 	{
-		char	   *lex = VARDATA(dlexemes[i]);
+		char	   *lex = VARDATA_ANY(dlexemes[i]);
 		int			lex_len = VARSIZE_ANY_EXHDR(dlexemes[i]);
 
 		memcpy(cur, lex, lex_len);
@@ -797,7 +847,7 @@ tsvector_filter(PG_FUNCTION_ARGS)
 
 		if (nulls[i])
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 					 errmsg("weight array may not contain nulls")));
 
 		char_weight = DatumGetChar(dweights[i]);
@@ -1360,7 +1410,7 @@ checkcondition_str(void *checkval, QueryOperand *val, ExecPhraseData *data)
  */
 static bool
 TS_phrase_execute(QueryItem *curitem,
-				  void *checkval, bool calcnot, ExecPhraseData *data,
+				  void *checkval, uint32 flags, ExecPhraseData *data,
 				  bool (*chkcond) (void *, QueryOperand *, ExecPhraseData *))
 {
 	/* since this function recurses, it could be driven to stack overflow */
@@ -1375,24 +1425,26 @@ TS_phrase_execute(QueryItem *curitem,
 		ExecPhraseData Ldata = {0, false, NULL},
 					Rdata = {0, false, NULL};
 		WordEntryPos *Lpos,
+				   *LposStart,
 				   *Rpos,
 				   *pos_iter = NULL;
 
 		Assert(curitem->qoperator.oper == OP_PHRASE);
 
 		if (!TS_phrase_execute(curitem + curitem->qoperator.left,
-							   checkval, calcnot, &Ldata, chkcond))
+							   checkval, flags, &Ldata, chkcond))
 			return false;
 
-		if (!TS_phrase_execute(curitem + 1, checkval, calcnot, &Rdata, chkcond))
+		if (!TS_phrase_execute(curitem + 1, checkval, flags, &Rdata, chkcond))
 			return false;
 
 		/*
-		 * if at least one of the operands has no position information,
-		 * fallback to AND operation.
+		 * if at least one of the operands has no position information, then
+		 * return false. But if TS_EXEC_PHRASE_AS_AND flag is set then we
+		 * return true as it is a AND operation
 		 */
 		if (Ldata.npos == 0 || Rdata.npos == 0)
-			return true;
+			return (flags & TS_EXEC_PHRASE_AS_AND) ? true : false;
 
 		/*
 		 * Result of the operation is a list of the corresponding positions of
@@ -1416,52 +1468,60 @@ TS_phrase_execute(QueryItem *curitem,
 			pos_iter = data->pos;
 		}
 
-		Lpos = Ldata.pos;
-		Rpos = Rdata.pos;
-
 		/*
 		 * Find matches by distance, WEP_GETPOS() is needed because
 		 * ExecPhraseData->data can point to the tsvector's WordEntryPosVector
 		 */
 
+		Rpos = Rdata.pos;
+		LposStart = Ldata.pos;
 		while (Rpos < Rdata.pos + Rdata.npos)
 		{
+			/*
+			 * We need to check all possible distances, so reset Lpos to
+			 * guaranteed not yet satisfied position.
+			 */
+			Lpos = LposStart;
 			while (Lpos < Ldata.pos + Ldata.npos)
 			{
-				if (WEP_GETPOS(*Lpos) <= WEP_GETPOS(*Rpos))
+				if (WEP_GETPOS(*Rpos) - WEP_GETPOS(*Lpos) ==
+					curitem->qoperator.distance)
 				{
-					/*
-					 * Lpos is behind the Rpos, so we have to check the
-					 * distance condition
-					 */
-					if (WEP_GETPOS(*Rpos) - WEP_GETPOS(*Lpos) <= curitem->qoperator.distance)
+					/* MATCH! */
+					if (data)
 					{
-						/* MATCH! */
-						if (data)
-						{
-							*pos_iter = WEP_GETPOS(*Rpos);
-							pos_iter++;
+						/* Store position for upper phrase operator */
+						*pos_iter = WEP_GETPOS(*Rpos);
+						pos_iter++;
 
-							break;		/* We need to build a unique result
-										 * array, so go to the next Rpos */
-						}
-						else
-						{
-							/*
-							 * We are in the root of the phrase tree and hence
-							 * we don't have to store the resulting positions
-							 */
-							return true;
-						}
+						/*
+						 * Set left start position to next, because current
+						 * one could not satisfy distance for any other right
+						 * position
+						 */
+						LposStart = Lpos + 1;
+						break;
 					}
+					else
+					{
+						/*
+						 * We are in the root of the phrase tree and hence we
+						 * don't have to store the resulting positions
+						 */
+						return true;
+					}
+
 				}
-				else
+				else if (WEP_GETPOS(*Rpos) <= WEP_GETPOS(*Lpos) ||
+						 WEP_GETPOS(*Rpos) - WEP_GETPOS(*Lpos) <
+						 curitem->qoperator.distance)
 				{
 					/*
-					 * Go to the next Rpos, because Lpos is ahead of the
-					 * current Rpos
+					 * Go to the next Rpos, because Lpos is ahead or on less
+					 * distance than required by current operator
 					 */
 					break;
+
 				}
 
 				Lpos++;
@@ -1489,13 +1549,11 @@ TS_phrase_execute(QueryItem *curitem,
  * chkcond is a callback function used to evaluate each VAL node in the query.
  * checkval can be used to pass information to the callback. TS_execute doesn't
  * do anything with it.
- * if calcnot is false, NOT expressions are always evaluated to be true. This
- * is used in ranking.
  * It believes that ordinary operators are always closier to root than phrase
  * operator, so, TS_execute() may not take care of lexeme's position at all.
  */
 bool
-TS_execute(QueryItem *curitem, void *checkval, bool calcnot,
+TS_execute(QueryItem *curitem, void *checkval, uint32 flags,
    bool (*chkcond) (void *checkval, QueryOperand *val, ExecPhraseData *data))
 {
 	/* since this function recurses, it could be driven to stack overflow */
@@ -1508,25 +1566,30 @@ TS_execute(QueryItem *curitem, void *checkval, bool calcnot,
 	switch (curitem->qoperator.oper)
 	{
 		case OP_NOT:
-			if (calcnot)
-				return !TS_execute(curitem + 1, checkval, calcnot, chkcond);
+			if (flags & TS_EXEC_CALC_NOT)
+				return !TS_execute(curitem + 1, checkval, flags, chkcond);
 			else
 				return true;
 
 		case OP_AND:
-			if (TS_execute(curitem + curitem->qoperator.left, checkval, calcnot, chkcond))
-				return TS_execute(curitem + 1, checkval, calcnot, chkcond);
+			if (TS_execute(curitem + curitem->qoperator.left, checkval, flags, chkcond))
+				return TS_execute(curitem + 1, checkval, flags, chkcond);
 			else
 				return false;
 
 		case OP_OR:
-			if (TS_execute(curitem + curitem->qoperator.left, checkval, calcnot, chkcond))
+			if (TS_execute(curitem + curitem->qoperator.left, checkval, flags, chkcond))
 				return true;
 			else
-				return TS_execute(curitem + 1, checkval, calcnot, chkcond);
+				return TS_execute(curitem + 1, checkval, flags, chkcond);
 
 		case OP_PHRASE:
-			return TS_phrase_execute(curitem, checkval, calcnot, NULL, chkcond);
+
+			/*
+			 * do not check TS_EXEC_PHRASE_AS_AND here because chkcond() could
+			 * do something more if it's called from TS_phrase_execute()
+			 */
+			return TS_phrase_execute(curitem, checkval, flags, NULL, chkcond);
 
 		default:
 			elog(ERROR, "unrecognized operator: %d", curitem->qoperator.oper);
@@ -1624,7 +1687,7 @@ ts_match_vq(PG_FUNCTION_ARGS)
 	result = TS_execute(
 						GETQUERY(query),
 						&chkval,
-						true,
+						TS_EXEC_CALC_NOT,
 						checkcondition_str
 		);
 

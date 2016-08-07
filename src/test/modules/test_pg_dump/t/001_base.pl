@@ -207,10 +207,10 @@ my %tests = (
 			binary_upgrade     => 1,
 			pg_dumpall_globals => 1,
 			section_post_data  => 1, }, },
-	'CREATE ROLE dump_test' => {
+	'CREATE ROLE regress_dump_test_role' => {
 		create_order => 1,
-		create_sql   => 'CREATE ROLE dump_test;',
-		regexp       => qr/^CREATE ROLE dump_test;$/m,
+		create_sql   => 'CREATE ROLE regress_dump_test_role;',
+		regexp       => qr/^CREATE ROLE regress_dump_test_role;$/m,
 		like         => { pg_dumpall_globals => 1, },
 		unlike       => {
 			binary_upgrade    => 1,
@@ -223,10 +223,52 @@ my %tests = (
 			schema_only       => 1,
 			section_pre_data  => 1,
 			section_post_data => 1, }, },
+    'CREATE SEQUENCE regress_pg_dump_table_col1_seq' => {
+            regexp => qr/^
+                    \QCREATE SEQUENCE regress_pg_dump_table_col1_seq\E
+                    \n\s+\QSTART WITH 1\E
+                    \n\s+\QINCREMENT BY 1\E
+                    \n\s+\QNO MINVALUE\E
+                    \n\s+\QNO MAXVALUE\E
+                    \n\s+\QCACHE 1;\E
+                    $/xm,
+            like   => { binary_upgrade => 1, },
+            unlike => {
+                    clean              => 1,
+                    clean_if_exists    => 1,
+                    createdb           => 1,
+                    defaults           => 1,
+                    no_privs           => 1,
+                    no_owner           => 1,
+                    pg_dumpall_globals => 1,
+                    schema_only        => 1,
+                    section_pre_data   => 1,
+                    section_post_data  => 1, }, },
+    'CREATE SEQUENCE regress_pg_dump_seq' => {
+            regexp => qr/^
+                    \QCREATE SEQUENCE regress_pg_dump_seq\E
+                    \n\s+\QSTART WITH 1\E
+                    \n\s+\QINCREMENT BY 1\E
+                    \n\s+\QNO MINVALUE\E
+                    \n\s+\QNO MAXVALUE\E
+                    \n\s+\QCACHE 1;\E
+                    $/xm,
+            like   => { binary_upgrade => 1, },
+            unlike => {
+                    clean              => 1,
+                    clean_if_exists    => 1,
+                    createdb           => 1,
+                    defaults           => 1,
+                    no_privs           => 1,
+                    no_owner           => 1,
+                    pg_dumpall_globals => 1,
+                    schema_only        => 1,
+                    section_pre_data   => 1,
+                    section_post_data  => 1, }, },
 	'CREATE TABLE regress_pg_dump_table' => {
 		regexp => qr/^
 			\QCREATE TABLE regress_pg_dump_table (\E
-			\n\s+\Qcol1 integer,\E
+			\n\s+\Qcol1 integer NOT NULL,\E
 			\n\s+\Qcol2 integer\E
 			\n\);$/xm,
 		like   => { binary_upgrade => 1, },
@@ -278,7 +320,7 @@ my %tests = (
 	'GRANT SELECT ON TABLE regress_pg_dump_table' => {
 		regexp => qr/^
 			\QSELECT pg_catalog.binary_upgrade_set_record_init_privs(true);\E\n
-			\QGRANT SELECT ON TABLE regress_pg_dump_table TO dump_test;\E\n
+			\QGRANT SELECT ON TABLE regress_pg_dump_table TO regress_dump_test_role;\E\n
 			\QSELECT pg_catalog.binary_upgrade_set_record_init_privs(false);\E
 			$/xms,
 		like   => { binary_upgrade => 1, },
@@ -311,12 +353,12 @@ my %tests = (
 			no_privs           => 1,
 			pg_dumpall_globals => 1,
 			section_post_data  => 1, }, },
-	'GRANT SELECT(col2) ON regress_pg_dump_table TO dump_test' => {
+	'GRANT SELECT(col2) ON regress_pg_dump_table TO regress_dump_test_role' => {
 		create_order => 4,
 		create_sql   => 'GRANT SELECT(col2) ON regress_pg_dump_table
-						   TO dump_test;',
+						   TO regress_dump_test_role;',
 		regexp => qr/^
-			\QGRANT SELECT(col2) ON TABLE regress_pg_dump_table TO dump_test;\E
+			\QGRANT SELECT(col2) ON TABLE regress_pg_dump_table TO regress_dump_test_role;\E
 			$/xm,
 		like => {
 			binary_upgrade   => 1,
@@ -330,6 +372,43 @@ my %tests = (
 		unlike => {
 			no_privs           => 1,
 			pg_dumpall_globals => 1,
+			section_post_data  => 1, }, },
+	'GRANT USAGE ON regress_pg_dump_table_col1_seq TO regress_dump_test_role' => {
+		create_order => 5,
+		create_sql   => 'GRANT USAGE ON SEQUENCE regress_pg_dump_table_col1_seq
+		                   TO regress_dump_test_role;',
+		regexp => qr/^
+			\QGRANT USAGE ON SEQUENCE regress_pg_dump_table_col1_seq TO regress_dump_test_role;\E
+			$/xm,
+		like => {
+			binary_upgrade   => 1,
+			clean            => 1,
+			clean_if_exists  => 1,
+			createdb         => 1,
+			defaults         => 1,
+			no_owner         => 1,
+			schema_only      => 1,
+			section_pre_data => 1, },
+		unlike => {
+			no_privs           => 1,
+			pg_dumpall_globals => 1,
+			section_post_data  => 1, }, },
+	'GRANT USAGE ON regress_pg_dump_seq TO regress_dump_test_role' => {
+		regexp => qr/^
+			\QGRANT USAGE ON SEQUENCE regress_pg_dump_seq TO regress_dump_test_role;\E
+			$/xm,
+		like => {
+			binary_upgrade   => 1, },
+		unlike => {
+			clean              => 1,
+			clean_if_exists    => 1,
+			createdb           => 1,
+			defaults           => 1,
+			no_owner           => 1,
+			no_privs           => 1,
+			pg_dumpall_globals => 1,
+			schema_only        => 1,
+			section_pre_data   => 1,
 			section_post_data  => 1, }, },
 	'REVOKE SELECT(col1) ON regress_pg_dump_table' => {
 		create_order => 3,

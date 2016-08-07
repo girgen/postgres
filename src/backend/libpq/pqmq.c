@@ -172,8 +172,8 @@ mq_putmessage(char msgtype, const char *s, size_t len)
 			break;
 
 		WaitLatch(&MyProc->procLatch, WL_LATCH_SET, 0);
-		CHECK_FOR_INTERRUPTS();
 		ResetLatch(&MyProc->procLatch);
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	pq_mq_busy = false;
@@ -232,7 +232,7 @@ pq_parse_errornotice(StringInfo msg, ErrorData *edata)
 			pq_getmsgend(msg);
 			break;
 		}
-		value = pq_getmsgstring(msg);
+		value = pq_getmsgrawstring(msg);
 
 		switch (code)
 		{

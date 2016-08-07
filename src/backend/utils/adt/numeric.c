@@ -3177,6 +3177,22 @@ makeNumericAggState(FunctionCallInfo fcinfo, bool calcSumX2)
 }
 
 /*
+ * Like makeNumericAggState(), but allocate the state in the current memory
+ * context.
+ */
+static NumericAggState *
+makeNumericAggStateCurrentContext(bool calcSumX2)
+{
+	NumericAggState *state;
+
+	state = (NumericAggState *) palloc0(sizeof(NumericAggState));
+	state->calcSumX2 = calcSumX2;
+	state->agg_context = CurrentMemoryContext;
+
+	return state;
+}
+
+/*
  * Accumulate a new input value for numeric aggregate functions.
  */
 static void
@@ -3374,7 +3390,7 @@ numeric_combine(PG_FUNCTION_ARGS)
 	{
 		old_context = MemoryContextSwitchTo(agg_context);
 
-		state1 = makeNumericAggState(fcinfo, true);
+		state1 = makeNumericAggStateCurrentContext(true);
 		state1->N = state2->N;
 		state1->NaNcount = state2->NaNcount;
 		state1->maxScale = state2->maxScale;
@@ -3465,7 +3481,7 @@ numeric_avg_combine(PG_FUNCTION_ARGS)
 	{
 		old_context = MemoryContextSwitchTo(agg_context);
 
-		state1 = makeNumericAggState(fcinfo, false);
+		state1 = makeNumericAggStateCurrentContext(false);
 		state1->N = state2->N;
 		state1->NaNcount = state2->NaNcount;
 		state1->maxScale = state2->maxScale;
@@ -3510,10 +3526,7 @@ numeric_avg_combine(PG_FUNCTION_ARGS)
 /*
  * numeric_avg_serialize
  *		Serialize NumericAggState for numeric aggregates that don't require
- *		sumX2. Serializes NumericAggState into bytea using the standard pq API.
- *
- * numeric_avg_deserialize(numeric_avg_serialize(state)) must result in a state
- * which matches the original input state.
+ *		sumX2.
  */
 Datum
 numeric_avg_serialize(PG_FUNCTION_ARGS)
@@ -3564,17 +3577,13 @@ numeric_avg_serialize(PG_FUNCTION_ARGS)
 
 /*
  * numeric_avg_deserialize
- *		Deserialize bytea into NumericAggState	for numeric aggregates that
- *		don't require sumX2. Deserializes bytea into NumericAggState using the
- *		standard pq API.
- *
- * numeric_avg_serialize(numeric_avg_deserialize(bytea)) must result in a value
- * which matches the original bytea value.
+ *		Deserialize bytea into NumericAggState for numeric aggregates that
+ *		don't require sumX2.
  */
 Datum
 numeric_avg_deserialize(PG_FUNCTION_ARGS)
 {
-	bytea	   *sstate = PG_GETARG_BYTEA_P(0);
+	bytea	   *sstate;
 	NumericAggState *result;
 	Datum		temp;
 	StringInfoData buf;
@@ -3582,14 +3591,16 @@ numeric_avg_deserialize(PG_FUNCTION_ARGS)
 	if (!AggCheckCallContext(fcinfo, NULL))
 		elog(ERROR, "aggregate function called in non-aggregate context");
 
+	sstate = PG_GETARG_BYTEA_P(0);
+
 	/*
 	 * Copy the bytea into a StringInfo so that we can "receive" it using the
-	 * standard pq API.
+	 * standard recv-function infrastructure.
 	 */
 	initStringInfo(&buf);
 	appendBinaryStringInfo(&buf, VARDATA(sstate), VARSIZE(sstate) - VARHDRSZ);
 
-	result = makeNumericAggState(fcinfo, false);
+	result = makeNumericAggStateCurrentContext(false);
 
 	/* N */
 	result->N = pq_getmsgint64(&buf);
@@ -3619,11 +3630,7 @@ numeric_avg_deserialize(PG_FUNCTION_ARGS)
 /*
  * numeric_serialize
  *		Serialization function for NumericAggState for numeric aggregates that
- *		require sumX2. Serializes NumericAggState into bytea using the standard
- *		pq API.
- *
- * numeric_deserialize(numeric_serialize(state)) must result in a state which
- * matches the original input state.
+ *		require sumX2.
  */
 Datum
 numeric_serialize(PG_FUNCTION_ARGS)
@@ -3683,16 +3690,12 @@ numeric_serialize(PG_FUNCTION_ARGS)
 /*
  * numeric_deserialize
  *		Deserialization function for NumericAggState for numeric aggregates that
- *		require sumX2. Deserializes bytea into into NumericAggState using the
- *		standard pq API.
- *
- * numeric_serialize(numeric_deserialize(bytea)) must result in a value which
- * matches the original bytea value.
+ *		require sumX2.
  */
 Datum
 numeric_deserialize(PG_FUNCTION_ARGS)
 {
-	bytea	   *sstate = PG_GETARG_BYTEA_P(0);
+	bytea	   *sstate;
 	NumericAggState *result;
 	Datum		temp;
 	StringInfoData buf;
@@ -3700,14 +3703,16 @@ numeric_deserialize(PG_FUNCTION_ARGS)
 	if (!AggCheckCallContext(fcinfo, NULL))
 		elog(ERROR, "aggregate function called in non-aggregate context");
 
+	sstate = PG_GETARG_BYTEA_P(0);
+
 	/*
 	 * Copy the bytea into a StringInfo so that we can "receive" it using the
-	 * standard pq API.
+	 * standard recv-function infrastructure.
 	 */
 	initStringInfo(&buf);
 	appendBinaryStringInfo(&buf, VARDATA(sstate), VARSIZE(sstate) - VARHDRSZ);
 
-	result = makeNumericAggState(fcinfo, false);
+	result = makeNumericAggStateCurrentContext(false);
 
 	/* N */
 	result->N = pq_getmsgint64(&buf);
@@ -3815,6 +3820,21 @@ makeInt128AggState(FunctionCallInfo fcinfo, bool calcSumX2)
 }
 
 /*
+ * Like makeInt128AggState(), but allocate the state in the current memory
+ * context.
+ */
+static Int128AggState *
+makeInt128AggStateCurrentContext(bool calcSumX2)
+{
+	Int128AggState *state;
+
+	state = (Int128AggState *) palloc0(sizeof(Int128AggState));
+	state->calcSumX2 = calcSumX2;
+
+	return state;
+}
+
+/*
  * Accumulate a new input value for 128-bit aggregate functions.
  */
 static void
@@ -3842,9 +3862,11 @@ do_int128_discard(Int128AggState *state, int128 newval)
 
 typedef Int128AggState PolyNumAggState;
 #define makePolyNumAggState makeInt128AggState
+#define makePolyNumAggStateCurrentContext makeInt128AggStateCurrentContext
 #else
 typedef NumericAggState PolyNumAggState;
 #define makePolyNumAggState makeNumericAggState
+#define makePolyNumAggStateCurrentContext makeNumericAggStateCurrentContext
 #endif
 
 Datum
@@ -3992,11 +4014,8 @@ numeric_poly_combine(PG_FUNCTION_ARGS)
 
 /*
  * numeric_poly_serialize
- *		Serialize PolyNumAggState into bytea using the standard pq API for
- *		aggregate functions which require sumX2.
- *
- * numeric_poly_deserialize(numeric_poly_serialize(state)) must result in a
- * state which matches the original input state.
+ *		Serialize PolyNumAggState into bytea for aggregate functions which
+ *		require sumX2.
  */
 Datum
 numeric_poly_serialize(PG_FUNCTION_ARGS)
@@ -4067,16 +4086,13 @@ numeric_poly_serialize(PG_FUNCTION_ARGS)
 
 /*
  * numeric_poly_deserialize
- *		Deserialize PolyNumAggState from bytea using the standard pq API for
- *		aggregate functions which require sumX2.
- *
- * numeric_poly_serialize(numeric_poly_deserialize(bytea)) must result in a
- * state which matches the original input state.
+ *		Deserialize PolyNumAggState from bytea for aggregate functions which
+ *		require sumX2.
  */
 Datum
 numeric_poly_deserialize(PG_FUNCTION_ARGS)
 {
-	bytea	   *sstate = PG_GETARG_BYTEA_P(0);
+	bytea	   *sstate;
 	PolyNumAggState *result;
 	Datum		sumX;
 	Datum		sumX2;
@@ -4085,14 +4101,16 @@ numeric_poly_deserialize(PG_FUNCTION_ARGS)
 	if (!AggCheckCallContext(fcinfo, NULL))
 		elog(ERROR, "aggregate function called in non-aggregate context");
 
+	sstate = PG_GETARG_BYTEA_P(0);
+
 	/*
 	 * Copy the bytea into a StringInfo so that we can "receive" it using the
-	 * standard pq API.
+	 * standard recv-function infrastructure.
 	 */
 	initStringInfo(&buf);
 	appendBinaryStringInfo(&buf, VARDATA(sstate), VARSIZE(sstate) - VARHDRSZ);
 
-	result = makePolyNumAggState(fcinfo, false);
+	result = makePolyNumAggStateCurrentContext(false);
 
 	/* N */
 	result->N = pq_getmsgint64(&buf);
@@ -4225,10 +4243,8 @@ int8_avg_combine(PG_FUNCTION_ARGS)
 
 /*
  * int8_avg_serialize
- *		Serialize PolyNumAggState into bytea using the standard pq API.
- *
- * int8_avg_deserialize(int8_avg_serialize(state)) must result in a state which
- * matches the original input state.
+ *		Serialize PolyNumAggState into bytea using the standard
+ *		recv-function infrastructure.
  */
 Datum
 int8_avg_serialize(PG_FUNCTION_ARGS)
@@ -4286,14 +4302,11 @@ int8_avg_serialize(PG_FUNCTION_ARGS)
 /*
  * int8_avg_deserialize
  *		Deserialize bytea back into PolyNumAggState.
- *
- * int8_avg_serialize(int8_avg_deserialize(bytea)) must result in a value which
- * matches the original bytea value.
  */
 Datum
 int8_avg_deserialize(PG_FUNCTION_ARGS)
 {
-	bytea	   *sstate = PG_GETARG_BYTEA_P(0);
+	bytea	   *sstate;
 	PolyNumAggState *result;
 	StringInfoData buf;
 	Datum		temp;
@@ -4301,14 +4314,16 @@ int8_avg_deserialize(PG_FUNCTION_ARGS)
 	if (!AggCheckCallContext(fcinfo, NULL))
 		elog(ERROR, "aggregate function called in non-aggregate context");
 
+	sstate = PG_GETARG_BYTEA_P(0);
+
 	/*
 	 * Copy the bytea into a StringInfo so that we can "receive" it using the
-	 * standard pq API.
+	 * standard recv-function infrastructure.
 	 */
 	initStringInfo(&buf);
 	appendBinaryStringInfo(&buf, VARDATA(sstate), VARSIZE(sstate) - VARHDRSZ);
 
-	result = makePolyNumAggState(fcinfo, false);
+	result = makePolyNumAggStateCurrentContext(false);
 
 	/* N */
 	result->N = pq_getmsgint64(&buf);
@@ -7274,7 +7289,7 @@ div_var_fast(NumericVar *var1, NumericVar *var2, NumericVar *result,
 		 * But having said that: div[qi] can be more than INT_MAX/NBASE, as
 		 * noted above, which means that the product div[qi] * NBASE *can*
 		 * overflow.  When that happens, adding it to div[qi + 1] will always
-		 * cause a cancelling overflow so that the end result is correct.  We
+		 * cause a canceling overflow so that the end result is correct.  We
 		 * could avoid the intermediate overflow by doing the multiplication
 		 * and addition in int64 arithmetic, but so far there appears no need.
 		 */

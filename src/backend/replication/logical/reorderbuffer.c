@@ -466,8 +466,8 @@ ReorderBufferGetTupleBuf(ReorderBuffer *rb, Size tuple_len)
 	/*
 	 * Most tuples are below MaxHeapTupleSize, so we use a slab allocator for
 	 * those. Thus always allocate at least MaxHeapTupleSize. Note that tuples
-	 * tuples generated for oldtuples can be bigger, as they don't have
-	 * out-of-line toast columns.
+	 * generated for oldtuples can be bigger, as they don't have out-of-line
+	 * toast columns.
 	 */
 	if (alloc_len < MaxHeapTupleSize)
 		alloc_len = MaxHeapTupleSize;
@@ -960,7 +960,7 @@ ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		{
 			ReorderBufferChange *cur_change;
 
-			if (txn->nentries != txn->nentries_mem)
+			if (cur_txn->nentries != cur_txn->nentries_mem)
 				ReorderBufferRestoreChanges(rb, cur_txn,
 											&state->entries[off].fd,
 											&state->entries[off].segno);
