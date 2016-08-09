@@ -952,7 +952,7 @@ typedef struct NUMProc
 
 
 #ifdef USE_ICU
-static UCaseMap *casemap = NULL; /* used for UTF-8 transcriptions */
+static UCaseMap *default_casemap = NULL; /* used for UTF-8 transcriptions */
 #endif   /* USE_ICU */
 
 
@@ -1516,9 +1516,11 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 		 */
 		uint32_t	buflen;
 		UErrorCode	status = U_ZERO_ERROR;
-		if (casemap == NULL)
+		UCaseMap   *casemap;
+
+		if (default_casemap == NULL)
 		{
-			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			default_casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
 			if (U_FAILURE(status))
 			{
 				ereport(ERROR,
@@ -1526,6 +1528,27 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
 			}
 		}
+
+		if (collid != DEFAULT_COLLATION_OID)
+		{
+			if (!OidIsValid(collid))
+			{
+				/*
+				 * This typically means that the parser could not resolve a
+				 * conflict of implicit collations, so report it that way.
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_INDETERMINATE_COLLATION),
+						 errmsg("could not determine which collation to use for string comparison"),
+						 errhint("Use the COLLATE clause to set the collation explicitly.")));
+			}
+			casemap = pg_icu_casemap_from_collation(collid);
+		}
+		else
+		{
+			casemap = default_casemap;
+		}
+
 		result = palloc(nbytes + 1); /* add a byte for null termination */
 		/* run desired function */
 		buflen = ucasemap_utf8ToLower(casemap, result, nbytes + 1, buff, nbytes, &status);
@@ -1675,9 +1698,11 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 		 */
 		uint32_t	buflen;
 		UErrorCode	status = U_ZERO_ERROR;
-		if (casemap == NULL)
+		UCaseMap   *casemap;
+
+		if (default_casemap == NULL)
 		{
-			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			default_casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
 			if (U_FAILURE(status))
 			{
 				ereport(ERROR,
@@ -1685,6 +1710,27 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
 			}
 		}
+
+		if (collid != DEFAULT_COLLATION_OID)
+		{
+			if (!OidIsValid(collid))
+			{
+				/*
+				 * This typically means that the parser could not resolve a
+				 * conflict of implicit collations, so report it that way.
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_INDETERMINATE_COLLATION),
+						 errmsg("could not determine which collation to use for string comparison"),
+						 errhint("Use the COLLATE clause to set the collation explicitly.")));
+			}
+			casemap = pg_icu_casemap_from_collation(collid);
+		}
+		else
+		{
+			casemap = default_casemap;
+		}
+
 		result = palloc(nbytes + 1); // add a byte for null termination
 		/* run desired function */
 		buflen = ucasemap_utf8ToUpper(casemap, result, nbytes + 1, buff, nbytes, &status);
@@ -1836,9 +1882,11 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 		 */
 		uint32_t	buflen;
 		UErrorCode	status = U_ZERO_ERROR;
-		if (casemap == NULL)
+		UCaseMap   *casemap;
+
+		if (default_casemap == NULL)
 		{
-			casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
+			default_casemap = ucasemap_open(NULL, U_FOLD_CASE_DEFAULT, &status);
 			if (U_FAILURE(status))
 			{
 				ereport(ERROR,
@@ -1846,6 +1894,27 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 						 errmsg("ICU error: oracle_compat.c, could not get UCaseMap.")));
 			}
 		}
+
+		if (collid != DEFAULT_COLLATION_OID)
+		{
+			if (!OidIsValid(collid))
+			{
+				/*
+				 * This typically means that the parser could not resolve a
+				 * conflict of implicit collations, so report it that way.
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_INDETERMINATE_COLLATION),
+						 errmsg("could not determine which collation to use for string comparison"),
+						 errhint("Use the COLLATE clause to set the collation explicitly.")));
+			}
+			casemap = pg_icu_casemap_from_collation(collid);
+		}
+		else
+		{
+			casemap = default_casemap;
+		}
+
 		result = palloc(nbytes + 1); // add a byte for null termination
 		/* run desired function */
 		buflen = ucasemap_utf8ToTitle(casemap, result, nbytes + 1, buff, nbytes, &status);
