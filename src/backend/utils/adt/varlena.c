@@ -82,9 +82,9 @@ typedef struct
  * This should be large enough that most strings will fit, but small enough
  * that we feel comfortable putting it on the stack
  */
-#define STACKBUFLEN		1024
+#define TEXTBUFLEN		1024
 #ifdef USE_ICU
-#define USTACKBUFLEN		STACKBUFLEN / sizeof(UChar)
+#define UTEXTBUFLEN		TEXTBUFLEN / sizeof(UChar)
 #endif /* USE_ICU */
 
 #define DatumGetUnknownP(X)			((unknown *) PG_DETOAST_DATUM(X))
@@ -1399,8 +1399,8 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 	}
 	else
 	{
-		char		a1buf[STACKBUFLEN];
-		char		a2buf[STACKBUFLEN];
+		char		a1buf[TEXTBUFLEN];
+		char		a2buf[TEXTBUFLEN];
 
 
 #ifdef USE_ICU
@@ -1449,7 +1449,8 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 							 errmsg("ICU Error: varlena.c, could not collate")));
 				}
 			}
-			else {
+			else
+			{
 				/* We keep a static converter "forever".
 				 * Create it first time we get here. */
 				static UConverter * conv = NULL;
@@ -1464,13 +1465,13 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 					}
 				}
 
-				UChar	a1buf[USTACKBUFLEN],
-						a2buf[USTACKBUFLEN];
-				int		a1len = USTACKBUFLEN,
-						a2len = USTACKBUFLEN;
+				UChar	a1buf[UTEXTBUFLEN],
+						a2buf[UTEXTBUFLEN];
+				int		a1len = UTEXTBUFLEN,
+						a2len = UTEXTBUFLEN;
 				UChar	*a1p,
 						*a2p;
-				if (len1 >= USTACKBUFLEN / sizeof(UChar))
+				if (len1 >= UTEXTBUFLEN / sizeof(UChar))
 				{
 					a1len = (len1 + 1) * sizeof(UChar);
 					a1p = (UChar *) palloc(a1len);
@@ -1478,7 +1479,7 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 				else
 					a1p = a1buf;
 
-				if (len2 >= USTACKBUFLEN / sizeof(UChar))
+				if (len2 >= UTEXTBUFLEN / sizeof(UChar))
 				{
 					a2len = (len2 + 1) * sizeof(UChar);
 					a2p = (UChar *) palloc(a2len);
@@ -1508,9 +1509,9 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 							(errcode(status),
 							 errmsg("ICU Error: varlena.c, could not collate")));
 				}
-				if (len1 * sizeof(UChar) >= USTACKBUFLEN)
+				if (len1 * sizeof(UChar) >= UTEXTBUFLEN)
 					pfree(a1p);
-				if (len2 * sizeof(UChar) >= USTACKBUFLEN)
+				if (len2 * sizeof(UChar) >= UTEXTBUFLEN)
 					pfree(a2p);
 			}
 			/*
@@ -1576,24 +1577,24 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 			int			a2len;
 			int			r;
 
-			if (len1 >= STACKBUFLEN / 2)
+			if (len1 >= TEXTBUFLEN / 2)
 			{
 				a1len = len1 * 2 + 2;
 				a1p = palloc(a1len);
 			}
 			else
 			{
-				a1len = STACKBUFLEN;
+				a1len = TEXTBUFLEN;
 				a1p = a1buf;
 			}
-			if (len2 >= STACKBUFLEN / 2)
+			if (len2 >= TEXTBUFLEN / 2)
 			{
 				a2len = len2 * 2 + 2;
 				a2p = palloc(a2len);
 			}
 			else
 			{
-				a2len = STACKBUFLEN;
+				a2len = TEXTBUFLEN;
 				a2p = a2buf;
 			}
 
@@ -1658,11 +1659,11 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 		}
 #endif   /* WIN32 */
 
-		if (len1 >= STACKBUFLEN)
+		if (len1 >= TEXTBUFLEN)
 			a1p = (char *) palloc(len1 + 1);
 		else
 			a1p = a1buf;
-		if (len2 >= STACKBUFLEN)
+		if (len2 >= TEXTBUFLEN)
 			a2p = (char *) palloc(len2 + 1);
 		else
 			a2p = a2buf;
@@ -1981,10 +1982,10 @@ btsortsupport_worker(SortSupport ssup, Oid collid)
 	if (abbreviate || !collate_c)
 	{
 		tss = palloc(sizeof(TextSortSupport));
-		tss->buf1 = palloc(STACKBUFLEN);
-		tss->buflen1 = STACKBUFLEN;
-		tss->buf2 = palloc(STACKBUFLEN);
-		tss->buflen2 = STACKBUFLEN;
+		tss->buf1 = palloc(TEXTBUFLEN);
+		tss->buflen1 = TEXTBUFLEN;
+		tss->buf2 = palloc(TEXTBUFLEN);
+		tss->buflen2 = TEXTBUFLEN;
 #ifdef HAVE_LOCALE_T
 		tss->locale = locale;
 #endif
