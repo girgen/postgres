@@ -1867,7 +1867,7 @@ btsortsupport_worker(SortSupport ssup, Oid collid)
 		ssup->comparator = bttextfastcmp_c;
 		collate_c = true;
 	}
-#ifdef WIN32
+#if defined(WIN32) || defined(USE_ICU)
 	else if (GetDatabaseEncoding() == PG_UTF8)
 		return;
 #endif
