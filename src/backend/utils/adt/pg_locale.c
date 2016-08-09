@@ -124,6 +124,7 @@ typedef struct
 	pg_locale_t locale;			/* locale_t struct, or 0 if not valid */
 #ifdef USE_ICU
 	UCollator  *icu_collator;
+	UCaseMap   *icu_casemap;
 #endif
 } collation_cache_entry;
 
@@ -1080,6 +1081,27 @@ pg_icu_collator_from_collation(Oid collid)
 	}
 	return cache_entry->icu_collator;
 }
+
+UCaseMap *pg_icu_casemap_from_collation(Oid collid)
+{
+	collation_cache_entry *cache_entry;
+
+	/* Callers must pass a valid OID */
+	Assert(OidIsValid(collid));
+
+	/* Return 0 for "default" collation, just in case caller forgets */
+	if (collid == DEFAULT_COLLATION_OID)
+		return NULL;
+
+	cache_entry = lookup_collation_cache(collid, false);
+
+	if (cache_entry->locale == 0)
+	{
+		pg_newlocale_from_collation(collid);
+		cache_entry = lookup_collation_cache(collid, false);
+	}
+	return cache_entry->icu_casemap;
+}
 #endif
 
 /*
@@ -1140,6 +1162,15 @@ pg_newlocale_from_collation(Oid collid)
 					 errmsg("ICU Error: pg_locale.c, could not open collator %s", collcollate)));
 		}
 		cache_entry->icu_collator = icu_collator;
+
+		UCaseMap *icu_casemap = ucasemap_open(collcollate, U_FOLD_CASE_DEFAULT, &status);
+		if (U_FAILURE(status))
+		{
+			ereport(WARNING,
+					(errcode(status),
+					 errmsg("ICU Error: pg_locale.c, could not open casemap %s", collcollate)));
+		}
+		cache_entry->icu_casemap = icu_casemap;
 #endif
 		if (strcmp(collcollate, collctype) == 0)
 		{
