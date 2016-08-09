@@ -49,8 +49,6 @@ static void makeAlterConfigCommand(PGconn *conn, const char *arrayitem,
 					   const char *name2);
 static void dumpDatabases(PGconn *conn);
 static void dumpTimestamp(char *msg);
-static void doShellQuoting(PQExpBuffer buf, const char *str);
-static void doConnStrQuoting(PQExpBuffer buf, const char *str);
 
 static int	runPgDump(const char *dbname);
 static void buildShSecLabels(PGconn *conn, const char *catalog_name,
@@ -213,7 +211,7 @@ main(int argc, char *argv[])
 			case 'f':
 				filename = pg_strdup(optarg);
 				appendPQExpBuffer(pgdumpopts, " -f ");
-				doShellQuoting(pgdumpopts, filename);
+				appendShellString(pgdumpopts, filename);
 				break;
 
 			case 'g':
@@ -254,7 +252,7 @@ main(int argc, char *argv[])
 
 			case 'S':
 				appendPQExpBuffer(pgdumpopts, " -S ");
-				doShellQuoting(pgdumpopts, optarg);
+				appendShellString(pgdumpopts, optarg);
 				break;
 
 			case 't':
@@ -290,13 +288,13 @@ main(int argc, char *argv[])
 
 			case 2:
 				appendPQExpBuffer(pgdumpopts, " --lock-wait-timeout ");
-				doShellQuoting(pgdumpopts, optarg);
+				appendShellString(pgdumpopts, optarg);
 				break;
 
 			case 3:
 				use_role = pg_strdup(optarg);
 				appendPQExpBuffer(pgdumpopts, " --role ");
-				doShellQuoting(pgdumpopts, use_role);
+				appendShellString(pgdumpopts, use_role);
 				break;
 
 			default:
@@ -1399,7 +1397,7 @@ dumpCreateDB(PGconn *conn)
 							  fdbname, fmtId(dbtablespace));
 
 			/* connect to original database */
-			appendPQExpBuffer(buf, "\\connect %s\n", fdbname);
+			appendPsqlMetaConnect(buf, dbname);
 		}
 
 		if (binary_upgrade)
@@ -1627,11 +1625,15 @@ dumpDatabases(PGconn *conn)
 		int			ret;
 
 		char	   *dbname = PQgetvalue(res, i, 0);
+		PQExpBufferData connectbuf;
 
 		if (verbose)
 			fprintf(stderr, _("%s: dumping database \"%s\"...\n"), progname, dbname);
 
-		fprintf(OPF, "\\connect %s\n\n", fmtId(dbname));
+		initPQExpBuffer(&connectbuf);
+		appendPsqlMetaConnect(&connectbuf, dbname);
+		fprintf(OPF, "%s\n", connectbuf.data);
+		termPQExpBuffer(&connectbuf);
 
 		/*
 		 * Restore will need to write to the target cluster.  This connection
@@ -1699,9 +1701,9 @@ runPgDump(const char *dbname)
 	 * string.
 	 */
 	appendPQExpBuffer(connstrbuf, "%s dbname=", connstr);
-	doConnStrQuoting(connstrbuf, dbname);
+	appendConnStrVal(connstrbuf, dbname);
 
-	doShellQuoting(cmd, connstrbuf->data);
+	appendShellString(cmd, connstrbuf->data);
 
 	appendPQExpBuffer(cmd, "%s", SYSTEMQUOTE);
 
@@ -1789,7 +1791,9 @@ connectDatabase(const char *dbname, const char *connection_string,
 
 		/*
 		 * Merge the connection info inputs given in form of connection string
-		 * and other options.
+		 * and other options.  Explicitly discard any dbname value in the
+		 * connection string; otherwise, PQconnectdbParams() would interpret
+		 * that value as being itself a connection string.
 		 */
 		if (connection_string)
 		{
@@ -1802,7 +1806,8 @@ connectDatabase(const char *dbname, const char *connection_string,
 
 			for (conn_opt = conn_opts; conn_opt->keyword != NULL; conn_opt++)
 			{
-				if (conn_opt->val != NULL && conn_opt->val[0] != '\0')
+				if (conn_opt->val != NULL && conn_opt->val[0] != '\0' &&
+					strcmp(conn_opt->keyword, "dbname") != 0)
 					argcount++;
 			}
 
@@ -1811,7 +1816,8 @@ connectDatabase(const char *dbname, const char *connection_string,
 
 			for (conn_opt = conn_opts; conn_opt->keyword != NULL; conn_opt++)
 			{
-				if (conn_opt->val != NULL && conn_opt->val[0] != '\0')
+				if (conn_opt->val != NULL && conn_opt->val[0] != '\0' &&
+					strcmp(conn_opt->keyword, "dbname") != 0)
 				{
 					keywords[i] = conn_opt->keyword;
 					values[i] = conn_opt->val;
@@ -1983,7 +1989,7 @@ constructConnStr(const char **keywords, const char **values)
 			appendPQExpBufferChar(buf, ' ');
 		firstkeyword = false;
 		appendPQExpBuffer(buf, "%s=", keywords[i]);
-		doConnStrQuoting(buf, values[i]);
+		appendConnStrVal(buf, values[i]);
 	}
 
 	connstr = pg_strdup(buf->data);
@@ -2067,82 +2073,4 @@ dumpTimestamp(char *msg)
 #endif
 				 localtime(&now)) != 0)
 		fprintf(OPF, "-- %s %s\n\n", msg, buf);
-}
-
-
-/*
- * Append the given string to the buffer, with suitable quoting for passing
- * the string as a value, in a keyword/pair value in a libpq connection
- * string
- */
-static void
-doConnStrQuoting(PQExpBuffer buf, const char *str)
-{
-	const char *s;
-	bool		needquotes;
-
-	/*
-	 * If the string consists entirely of plain ASCII characters, no need to
-	 * quote it. This is quite conservative, but better safe than sorry.
-	 */
-	needquotes = false;
-	for (s = str; *s; s++)
-	{
-		if (!((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') ||
-			  (*s >= '0' && *s <= '9') || *s == '_' || *s == '.'))
-		{
-			needquotes = true;
-			break;
-		}
-	}
-
-	if (needquotes)
-	{
-		appendPQExpBufferChar(buf, '\'');
-		while (*str)
-		{
-			/* ' and \ must be escaped by to \' and \\ */
-			if (*str == '\'' || *str == '\\')
-				appendPQExpBufferChar(buf, '\\');
-
-			appendPQExpBufferChar(buf, *str);
-			str++;
-		}
-		appendPQExpBufferChar(buf, '\'');
-	}
-	else
-		appendPQExpBufferStr(buf, str);
-}
-
-/*
- * Append the given string to the shell command being built in the buffer,
- * with suitable shell-style quoting.
- */
-static void
-doShellQuoting(PQExpBuffer buf, const char *str)
-{
-	const char *p;
-
-#ifndef WIN32
-	appendPQExpBufferChar(buf, '\'');
-	for (p = str; *p; p++)
-	{
-		if (*p == '\'')
-			appendPQExpBuffer(buf, "'\"'\"'");
-		else
-			appendPQExpBufferChar(buf, *p);
-	}
-	appendPQExpBufferChar(buf, '\'');
-#else							/* WIN32 */
-
-	appendPQExpBufferChar(buf, '"');
-	for (p = str; *p; p++)
-	{
-		if (*p == '"')
-			appendPQExpBuffer(buf, "\\\"");
-		else
-			appendPQExpBufferChar(buf, *p);
-	}
-	appendPQExpBufferChar(buf, '"');
-#endif   /* WIN32 */
 }
