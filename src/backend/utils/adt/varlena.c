@@ -43,6 +43,7 @@
 #include <unicode/ucol.h>
 #include <unicode/uloc.h>
 #include "unicode/uiter.h"
+static UCollator *default_collator = NULL;
 #endif /* USE_ICU */
 
 
@@ -79,6 +80,9 @@ typedef struct
 #ifdef HAVE_LOCALE_T
 	pg_locale_t locale;
 #endif
+#ifdef USE_ICU
+	UCollator  *icu_collator;
+#endif
 } TextSortSupport;
 
 /*
@@ -86,9 +90,6 @@ typedef struct
  * that we feel comfortable putting it on the stack
  */
 #define TEXTBUFLEN		1024
-#ifdef USE_ICU
-#define UTEXTBUFLEN		TEXTBUFLEN / sizeof(UChar)
-#endif /* USE_ICU */
 
 #define DatumGetUnknownP(X)			((unknown *) PG_DETOAST_DATUM(X))
 #define DatumGetUnknownPCopy(X)		((unknown *) PG_DETOAST_DATUM_COPY(X))
@@ -1400,6 +1401,18 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 		if ((result == 0) && (len1 != len2))
 			result = (len1 < len2) ? -1 : 1;
 	}
+
+	else if (collid != DEFAULT_COLLATION_OID && !OidIsValid(collid))
+	{
+		/*
+		 * This typically means that the parser could not resolve a
+		 * conflict of implicit collations, so report it that way.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_INDETERMINATE_COLLATION),
+				 errmsg("could not determine which collation to use for string comparison"),
+				 errhint("Use the COLLATE clause to set the collation explicitly.")));
+	}
 	/*
 	 * memcmp() can't tell us which of two unequal strings sorts first,
 	 * but it's a cheap way to tell if they're equal.  Testing shows that
@@ -1416,7 +1429,6 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 
 	else if (GetDatabaseEncoding() == PG_UTF8)
 	{
-		static UCollator *default_collator = NULL;
 		UCollator *collator;
 		UErrorCode status = U_ZERO_ERROR;
 
@@ -1447,24 +1459,9 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 		}
 
 		if (collid != DEFAULT_COLLATION_OID)
-		{
-			if (!OidIsValid(collid))
-			{
-				/*
-				 * This typically means that the parser could not resolve a
-				 * conflict of implicit collations, so report it that way.
-				 */
-				ereport(ERROR,
-						(errcode(ERRCODE_INDETERMINATE_COLLATION),
-						 errmsg("could not determine which collation to use for string comparison"),
-						 errhint("Use the COLLATE clause to set the collation explicitly.")));
-			}
 			collator = pg_icu_collator_from_collation(collid);
-		}
 		else
-		{
 			collator = default_collator;
-		}
 
 		UCharIterator sIter, tIter;
 		uiter_setUTF8(&sIter, arg1, len1);
@@ -1505,17 +1502,6 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 
 		if (collid != DEFAULT_COLLATION_OID)
 		{
-			if (!OidIsValid(collid))
-			{
-				/*
-				 * This typically means that the parser could not resolve a
-				 * conflict of implicit collations, so report it that way.
-				 */
-				ereport(ERROR,
-						(errcode(ERRCODE_INDETERMINATE_COLLATION),
-						 errmsg("could not determine which collation to use for string comparison"),
-						 errhint("Use the COLLATE clause to set the collation explicitly.")));
-			}
 #ifdef HAVE_LOCALE_T
 			mylocale = pg_newlocale_from_collation(collid);
 #endif
@@ -1844,6 +1830,9 @@ btsortsupport_worker(SortSupport ssup, Oid collid)
 #ifdef HAVE_LOCALE_T
 	pg_locale_t locale = 0;
 #endif
+#ifdef USE_ICU
+	UCollator  *icu_collator = NULL;
+#endif
 
 	/*
 	 * If possible, set ssup->comparator to a function which can be used to
@@ -1867,7 +1856,7 @@ btsortsupport_worker(SortSupport ssup, Oid collid)
 		ssup->comparator = bttextfastcmp_c;
 		collate_c = true;
 	}
-#if defined(WIN32) || defined(USE_ICU)
+#ifdef WIN32
 	else if (GetDatabaseEncoding() == PG_UTF8)
 		return;
 #endif
@@ -1895,6 +1884,37 @@ btsortsupport_worker(SortSupport ssup, Oid collid)
 			}
 #ifdef HAVE_LOCALE_T
 			locale = pg_newlocale_from_collation(collid);
+#endif
+#ifdef USE_ICU
+			if (GetDatabaseEncoding() == PG_UTF8)
+			{
+				icu_collator = pg_icu_collator_from_collation(collid);
+			}
+		}
+		else if (GetDatabaseEncoding() == PG_UTF8)
+		{
+			/* We keep a static default collator "forever" per session,
+			 * as per discussion in varstr_cmp(). */
+			if (default_collator == NULL)
+			{
+				UErrorCode status = U_ZERO_ERROR;
+
+				uloc_setDefault(setlocale(LC_COLLATE, NULL), &status);
+				if(U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not set default lc_collate")));
+				}
+				default_collator = ucol_open(NULL, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not open collator")));
+				}
+			}
+			icu_collator = default_collator;
 #endif
 		}
 	}
@@ -1940,6 +1960,9 @@ btsortsupport_worker(SortSupport ssup, Oid collid)
 		tss->buflen2 = TEXTBUFLEN;
 #ifdef HAVE_LOCALE_T
 		tss->locale = locale;
+#endif
+#ifdef USE_ICU
+		tss->icu_collator = icu_collator;
 #endif
 		tss->collate_c = collate_c;
 		ssup->ssup_extra = tss;
@@ -2043,6 +2066,23 @@ bttextfastcmp_locale(Datum x, Datum y, SortSupport ssup)
 	memcpy(tss->buf2, a2p, len2);
 	tss->buf2[len2] = '\0';
 
+#ifdef USE_ICU
+	if (GetDatabaseEncoding() == PG_UTF8 && tss->icu_collator)
+	{
+		UErrorCode status = U_ZERO_ERROR;
+		UCharIterator sIter, tIter;
+		uiter_setUTF8(&sIter, a1p, len1);
+		uiter_setUTF8(&tIter, a2p, len2);
+		result = ucol_strcollIter(tss->icu_collator, &sIter, &tIter, &status);
+		if (U_FAILURE(status))
+		{
+			ereport(WARNING,
+					(errcode(status),
+					 errmsg("ICU Error: varlena.c, could not collate")));
+		}
+	}
+	else
+#endif
 #ifdef HAVE_LOCALE_T
 	if (tss->locale)
 		result = strcoll_l(tss->buf1, tss->buf2, tss->locale);
