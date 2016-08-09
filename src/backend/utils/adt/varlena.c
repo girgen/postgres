@@ -1893,7 +1893,7 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 
 		collate_c = true;
 	}
-#ifdef WIN32
+#if defined(WIN32) || defined(USE_ICU)
 	else if (GetDatabaseEncoding() == PG_UTF8)
 		return;
 #endif
