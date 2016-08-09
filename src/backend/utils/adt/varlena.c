@@ -5098,7 +5098,7 @@ text_format(PG_FUNCTION_ARGS)
 		if (arg >= nargs)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("too few arguments for format")));
+					 errmsg("too few arguments for format()")));
 
 		/* Get the value and type of the selected argument */
 		if (!funcvariadic)
