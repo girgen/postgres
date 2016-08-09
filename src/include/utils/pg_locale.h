@@ -20,6 +20,9 @@
 #include "utils/guc.h"
 
 #ifdef USE_ICU
+#define U_CHARSET_IS_UTF8 1
+#include <unicode/uchar.h>
+#include <unicode/ucasemap.h>
 #include <unicode/ucol.h>
 #endif
 
@@ -76,6 +79,7 @@ typedef int pg_locale_t;
 
 #ifdef USE_ICU
 extern UCollator * pg_icu_collator_from_collation(Oid collid);
+extern UCaseMap  * pg_icu_casemap_from_collation(Oid collid);
 #endif
 extern pg_locale_t pg_newlocale_from_collation(Oid collid);
 
