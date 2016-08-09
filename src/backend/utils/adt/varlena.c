@@ -97,9 +97,6 @@ typedef struct
  * that we feel comfortable putting it on the stack
  */
 #define TEXTBUFLEN		1024
-#ifdef USE_ICU
-#define UTEXTBUFLEN		TEXTBUFLEN / sizeof(UChar)
-#endif /* USE_ICU */
 
 #define DatumGetUnknownP(X)			((unknown *) PG_DETOAST_DATUM(X))
 #define DatumGetUnknownPCopy(X)		((unknown *) PG_DETOAST_DATUM_COPY(X))
@@ -1414,6 +1411,18 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 		if ((result == 0) && (len1 != len2))
 			result = (len1 < len2) ? -1 : 1;
 	}
+
+	else if (collid != DEFAULT_COLLATION_OID && !OidIsValid(collid))
+	{
+		/*
+		 * This typically means that the parser could not resolve a
+		 * conflict of implicit collations, so report it that way.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_INDETERMINATE_COLLATION),
+				 errmsg("could not determine which collation to use for string comparison"),
+				 errhint("Use the COLLATE clause to set the collation explicitly.")));
+	}
 	/*
 	 * memcmp() can't tell us which of two unequal strings sorts first,
 	 * but it's a cheap way to tell if they're equal.  Testing shows that
@@ -1460,24 +1469,9 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 		}
 
 		if (collid != DEFAULT_COLLATION_OID)
-		{
-			if (!OidIsValid(collid))
-			{
-				/*
-				 * This typically means that the parser could not resolve a
-				 * conflict of implicit collations, so report it that way.
-				 */
-				ereport(ERROR,
-						(errcode(ERRCODE_INDETERMINATE_COLLATION),
-						 errmsg("could not determine which collation to use for string comparison"),
-						 errhint("Use the COLLATE clause to set the collation explicitly.")));
-			}
 			collator = pg_icu_collator_from_collation(collid);
-		}
 		else
-		{
 			collator = default_collator;
-		}
 
 		UCharIterator sIter, tIter;
 		uiter_setUTF8(&sIter, arg1, len1);
@@ -1518,17 +1512,6 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 
 		if (collid != DEFAULT_COLLATION_OID)
 		{
-			if (!OidIsValid(collid))
-			{
-				/*
-				 * This typically means that the parser could not resolve a
-				 * conflict of implicit collations, so report it that way.
-				 */
-				ereport(ERROR,
-						(errcode(ERRCODE_INDETERMINATE_COLLATION),
-						 errmsg("could not determine which collation to use for string comparison"),
-						 errhint("Use the COLLATE clause to set the collation explicitly.")));
-			}
 #ifdef HAVE_LOCALE_T
 			mylocale = pg_newlocale_from_collation(collid);
 #endif
