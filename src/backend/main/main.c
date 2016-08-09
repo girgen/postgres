@@ -35,8 +35,15 @@
 #include <sys/param.h>
 #endif
 
+#if defined(_M_AMD64) && _MSC_VER == 1800
+#include <math.h>
+#include <versionhelpers.h>
+#endif
+
 #include "bootstrap/bootstrap.h"
 #include "postmaster/postmaster.h"
+#include "storage/barrier.h"
+#include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/help_config.h"
 #include "utils/memutils.h"
@@ -288,8 +295,30 @@ startup_hacks(const char *progname)
 
 		/* In case of general protection fault, don't show GUI popup box */
 		SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+
+#if defined(_M_AMD64) && _MSC_VER == 1800
+		/*
+		 * Avoid crashing in certain floating-point operations if
+		 * we were compiled for x64 with MS Visual Studio 2013 and
+		 * are running on Windows prior to 7/2008R2 SP1 on an
+		 * AVX2-capable CPU.
+		 *
+		 * Ref: https://connect.microsoft.com/VisualStudio/feedback/details/811093/visual-studio-2013-rtm-c-x64-code-generation-bug-for-avx2-instructions
+		 */
+		if (!IsWindows7SP1OrGreater())
+		{
+			_set_FMA3_enable(0);
+		}
+#endif /* defined(_M_AMD64) && _MSC_VER == 1800 */
+
 	}
 #endif   /* WIN32 */
+
+	/*
+	 * Initialize dummy_spinlock, in case we are on a platform where we have
+	 * to use the fallback implementation of pg_memory_barrier().
+	 */
+	SpinLockInit(&dummy_spinlock);
 }
 
 

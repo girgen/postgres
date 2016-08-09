@@ -57,6 +57,10 @@
 #ifndef INT64_MAX
 #define INT64_MAX	INT64CONST(0x7FFFFFFFFFFFFFFF)
 #endif
+#ifndef INT64_MIN
+#define INT64_MIN	(-INT64CONST(0x7FFFFFFFFFFFFFFF) - 1)
+#endif
+
 
 /*
  * Multi-platform pthread implementations
@@ -197,7 +201,7 @@ typedef struct
 	int			state;			/* state No. */
 	int			cnt;			/* xacts count */
 	int			ecnt;			/* error count */
-	int			listen;			/* 0 indicates that an async query has been
+	int			listen;			/* 1 indicates that an async query has been
 								 * sent */
 	int			sleeping;		/* 1 indicates that the client is napping */
 	int64		until;			/* napping until (usec) */
@@ -1111,6 +1115,11 @@ top:
 		}
 		INSTR_TIME_SET_CURRENT(end);
 		INSTR_TIME_ACCUM_DIFF(*conn_time, end, start);
+
+		/* Reset session-local state */
+		st->listen = 0;
+		st->sleeping = 0;
+		memset(st->prepared, 0, sizeof(st->prepared));
 	}
 
 	/* Record transaction start time if logging is enabled */
@@ -1331,13 +1340,37 @@ top:
 					snprintf(res, sizeof(res), INT64_FORMAT, ope1 * ope2);
 				else if (strcmp(argv[3], "/") == 0)
 				{
+					int64	operes;
+
 					if (ope2 == 0)
 					{
 						fprintf(stderr, "%s: division by zero\n", argv[0]);
 						st->ecnt++;
 						return true;
 					}
-					snprintf(res, sizeof(res), INT64_FORMAT, ope1 / ope2);
+					/*
+					 * INT64_MIN / -1 is problematic, since the result can't
+					 * be represented on a two's-complement machine. Some
+					 * machines produce INT64_MIN, some produce zero, some
+					 * throw an exception. We can dodge the problem by
+					 * recognizing that division by -1 is the same as
+					 * negation.
+					 */
+					if (ope2 == -1)
+					{
+						operes = -ope1;
+
+						/* overflow check (needed for INT64_MIN) */
+						if (ope1 == INT64_MIN)
+						{
+							fprintf(stderr, "bigint out of range\n");
+							st->ecnt++;
+							return true;
+						}
+					}
+					else
+						operes = ope1 / ope2;
+					snprintf(res, sizeof(res), INT64_FORMAT, operes);
 				}
 				else
 				{
@@ -2817,7 +2850,7 @@ threadRun(void *arg)
 			sock = PQsocket(st->con);
 			if (sock < 0)
 			{
-				fprintf(stderr, "bad socket: %s\n", strerror(errno));
+				fprintf(stderr, "bad socket: %s", PQerrorMessage(st->con));
 				goto done;
 			}
 
@@ -2858,11 +2891,21 @@ threadRun(void *arg)
 			Command   **commands = sql_files[st->use_file];
 			int			prev_ecnt = st->ecnt;
 
-			if (st->con && (FD_ISSET(PQsocket(st->con), &input_mask)
-							|| commands[st->state]->type == META_COMMAND))
+			if (st->con)
 			{
-				if (!doCustom(thread, st, &result->conn_time, logfile, &aggs))
-					remains--;	/* I've aborted */
+				int			sock = PQsocket(st->con);
+
+				if (sock < 0)
+				{
+					fprintf(stderr, "bad socket: %s", PQerrorMessage(st->con));
+					goto done;
+				}
+				if (FD_ISSET(sock, &input_mask) ||
+					commands[st->state]->type == META_COMMAND)
+				{
+					if (!doCustom(thread, st, &result->conn_time, logfile, &aggs))
+						remains--;	/* I've aborted */
+				}
 			}
 
 			if (st->ecnt > prev_ecnt && commands[st->state]->type == META_COMMAND)

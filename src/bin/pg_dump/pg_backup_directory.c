@@ -364,9 +364,6 @@ _WriteData(ArchiveHandle *AH, const void *data, size_t dLen)
 	if (dLen == 0)
 		return 0;
 
-	/* Are we aborting? */
-	checkAborting(AH);
-
 	return cfwrite(data, dLen, ctx->dataFH);
 }
 
@@ -411,7 +408,9 @@ _PrintFileData(ArchiveHandle *AH, char *filename, RestoreOptions *ropt)
 	buflen = ZLIB_OUT_SIZE;
 
 	while ((cnt = cfread(buf, buflen, cfp)))
+	{
 		ahwrite(buf, 1, cnt, AH);
+	}
 
 	free(buf);
 	if (cfclose(cfp) !=0)
@@ -533,9 +532,6 @@ _WriteBuf(ArchiveHandle *AH, const void *buf, size_t len)
 {
 	lclContext *ctx = (lclContext *) AH->formatData;
 	size_t		res;
-
-	/* Are we aborting? */
-	checkAborting(AH);
 
 	res = cfwrite(buf, len, ctx->dataFH);
 	if (res != len)

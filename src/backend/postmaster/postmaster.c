@@ -500,6 +500,9 @@ typedef struct
 	slock_t    *ShmemLock;
 	VariableCache ShmemVariableCache;
 	Backend    *ShmemBackendArray;
+#ifndef HAVE_SPINLOCKS
+	PGSemaphore	SpinlockSemaArray;
+#endif
 	LWLock	   *LWLockArray;
 	slock_t    *ProcStructLock;
 	PROC_HDR   *ProcGlobal;
@@ -844,10 +847,14 @@ PostmasterMain(int argc, char *argv[])
 	if (output_config_variable != NULL)
 	{
 		/*
-		 * permission is handled because the user is reading inside the data
-		 * dir
+		 * "-C guc" was specified, so print GUC's value and exit.  No extra
+		 * permission check is needed because the user is reading inside the
+		 * data dir.
 		 */
-		puts(GetConfigOption(output_config_variable, false, false));
+		const char *config_val = GetConfigOption(output_config_variable,
+												 false, false);
+
+		puts(config_val ? config_val : "");
 		ExitPostmaster(0);
 	}
 
@@ -4005,6 +4012,14 @@ BackendInitialize(Port *port)
 	else
 		snprintf(remote_ps_data, sizeof(remote_ps_data), "%s(%s)", remote_host, remote_port);
 
+	/*
+	 * Save remote_host and remote_port in port structure (after this, they
+	 * will appear in log_line_prefix data for log messages).
+	 */
+	port->remote_host = strdup(remote_host);
+	port->remote_port = strdup(remote_port);
+
+	/* And now we can issue the Log_connections message, if wanted */
 	if (Log_connections)
 	{
 		if (remote_port[0])
@@ -4017,12 +4032,6 @@ BackendInitialize(Port *port)
 					(errmsg("connection received: host=%s",
 							remote_host)));
 	}
-
-	/*
-	 * save remote_host and remote_port in port structure
-	 */
-	port->remote_host = strdup(remote_host);
-	port->remote_port = strdup(remote_port);
 
 	/*
 	 * If we did a reverse lookup to name, we might as well save the results
@@ -6048,6 +6057,9 @@ save_backend_variables(BackendParameters *param, Port *port,
 	param->ShmemVariableCache = ShmemVariableCache;
 	param->ShmemBackendArray = ShmemBackendArray;
 
+#ifndef HAVE_SPINLOCKS
+	param->SpinlockSemaArray = SpinlockSemaArray;
+#endif
 	param->LWLockArray = LWLockArray;
 	param->ProcStructLock = ProcStructLock;
 	param->ProcGlobal = ProcGlobal;
@@ -6276,6 +6288,9 @@ restore_backend_variables(BackendParameters *param, Port *port)
 	ShmemVariableCache = param->ShmemVariableCache;
 	ShmemBackendArray = param->ShmemBackendArray;
 
+#ifndef HAVE_SPINLOCKS
+	SpinlockSemaArray = param->SpinlockSemaArray;
+#endif
 	LWLockArray = param->LWLockArray;
 	ProcStructLock = param->ProcStructLock;
 	ProcGlobal = param->ProcGlobal;
