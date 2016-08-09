@@ -44,6 +44,7 @@
 #include <unicode/ucol.h>
 #include <unicode/uloc.h>
 #include "unicode/uiter.h"
+static UCollator *default_collator = NULL;
 #endif /* USE_ICU */
 
 
@@ -85,6 +86,9 @@ typedef struct
 	double		prop_card;		/* Required cardinality proportion */
 #ifdef HAVE_LOCALE_T
 	pg_locale_t locale;
+#endif
+#ifdef USE_ICU
+	UCollator  *icu_collator;
 #endif
 } VarStringSortSupport;
 
@@ -1426,7 +1430,6 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 
 	else if (GetDatabaseEncoding() == PG_UTF8)
 	{
-		static UCollator *default_collator = NULL;
 		UCollator *collator;
 		UErrorCode status = U_ZERO_ERROR;
 
@@ -1865,6 +1868,9 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 #ifdef HAVE_LOCALE_T
 	pg_locale_t locale = 0;
 #endif
+#ifdef USE_ICU
+	UCollator  *icu_collator = NULL;
+#endif
 
 	/*
 	 * If possible, set ssup->comparator to a function which can be used to
@@ -1893,7 +1899,7 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 
 		collate_c = true;
 	}
-#if defined(WIN32) || defined(USE_ICU)
+#ifdef WIN32
 	else if (GetDatabaseEncoding() == PG_UTF8)
 		return;
 #endif
@@ -1921,6 +1927,37 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 			}
 #ifdef HAVE_LOCALE_T
 			locale = pg_newlocale_from_collation(collid);
+#endif
+#ifdef USE_ICU
+			if (GetDatabaseEncoding() == PG_UTF8)
+			{
+				icu_collator = pg_icu_collator_from_collation(collid);
+			}
+		}
+		else if (GetDatabaseEncoding() == PG_UTF8)
+		{
+			/* We keep a static default collator "forever" per session,
+			 * as per discussion in varstr_cmp(). */
+			if (default_collator == NULL)
+			{
+				UErrorCode status = U_ZERO_ERROR;
+
+				uloc_setDefault(setlocale(LC_COLLATE, NULL), &status);
+				if(U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not set default lc_collate")));
+				}
+				default_collator = ucol_open(NULL, &status);
+				if (U_FAILURE(status))
+				{
+					ereport(WARNING,
+							(errcode(status),
+							 errmsg("ICU Error: varlena.c, could not open collator")));
+				}
+			}
+			icu_collator = default_collator;
 #endif
 		}
 	}
@@ -1972,6 +2009,9 @@ varstr_sortsupport(SortSupport ssup, Oid collid, bool bpchar)
 		sss->last_returned = 0;
 #ifdef HAVE_LOCALE_T
 		sss->locale = locale;
+#endif
+#ifdef USE_ICU
+		sss->icu_collator = icu_collator;
 #endif
 
 		/*
@@ -2183,6 +2223,23 @@ varstrfastcmp_locale(Datum x, Datum y, SortSupport ssup)
 		goto done;
 	}
 
+#ifdef USE_ICU
+	if (GetDatabaseEncoding() == PG_UTF8 && sss->icu_collator)
+	{
+		UErrorCode status = U_ZERO_ERROR;
+		UCharIterator sIter, tIter;
+		uiter_setUTF8(&sIter, a1p, len1);
+		uiter_setUTF8(&tIter, a2p, len2);
+		result = ucol_strcollIter(sss->icu_collator, &sIter, &tIter, &status);
+		if (U_FAILURE(status))
+		{
+			ereport(WARNING,
+					(errcode(status),
+					 errmsg("ICU Error: varlena.c, could not collate")));
+		}
+	}
+	else
+#endif
 #ifdef HAVE_LOCALE_T
 	if (sss->locale)
 		result = strcoll_l(sss->buf1, sss->buf2, sss->locale);
