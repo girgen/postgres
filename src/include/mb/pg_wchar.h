@@ -273,6 +273,9 @@ typedef struct pg_enc2name
 } pg_enc2name;
 
 extern pg_enc2name pg_enc2name_tbl[];
+#ifdef USE_ICU
+extern pg_enc2name pg_enc2iananame_tbl[];
+#endif
 
 /*
  * Encoding names for gettext
