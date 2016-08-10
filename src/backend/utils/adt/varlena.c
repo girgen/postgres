@@ -39,7 +39,6 @@
 #include <unicode/ucol.h>
 #include <unicode/uloc.h>
 #include "unicode/uiter.h"
-#define USTACKBUFLEN		STACKBUFLEN / sizeof(UChar)
 #endif /* USE_ICU */
 
 
@@ -1451,6 +1450,8 @@ varstr_cmp(char *arg1, int len1, char *arg2, int len2, Oid collid)
 
 	else
 	{
+#define STACKBUFLEN		1024
+
 		char		a1buf[STACKBUFLEN];
 		char		a2buf[STACKBUFLEN];
 		char	   *a1p,
