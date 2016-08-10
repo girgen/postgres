@@ -1741,7 +1741,7 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 			pfree(result);
 			result = palloc(buflen + 1);
 			status = U_ZERO_ERROR;
-			buflen = ucasemap_utf8ToUpper(casemap, result + 1, buflen, buff, nbytes, &status);
+			buflen = ucasemap_utf8ToUpper(casemap, result, buflen + 1, buff, nbytes, &status);
 		}
 		if (U_FAILURE(status))
 		{
